@@ -24,7 +24,14 @@ public enum ResultCodeEnum {
     DUPLICATE_REQUEST(2001, "重复请求"),
     SERVICE_UNAVAILABLE(2002, "服务不可用"),
     TRANSACTION_FAILED(2003, "交易失败"),
-    DISTRIBUTED_LOCK_FAILED(2004, "获取分布式锁失败");
+    DISTRIBUTED_LOCK_FAILED(2004, "获取分布式锁失败"),
+
+    TRANSACTION_NOT_EXIST(3001, "交易不存在"),
+    DEBIT_CREDIT_NOT_BALANCE(3002, "借贷不平衡"),
+    INVALID_DIRECTION(3003, "无效的借贷方向"),
+    INVALID_TRANSACTION_TYPE(3004, "无效的交易类型"),
+    CONCURRENT_UPDATE_FAILED(3005, "并发更新失败，请重试"),
+    INSUFFICIENT_ENTRY(3006, "至少需要两条分录");
 
     private final Integer code;
     private final String message;

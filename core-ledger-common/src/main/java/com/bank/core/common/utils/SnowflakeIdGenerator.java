@@ -29,4 +29,16 @@ public class SnowflakeIdGenerator {
     public static String generateTraceId() {
         return "TRACE" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(12);
     }
+
+    public static String generateTransactionNo() {
+        return "TXN" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+    }
+
+    public static String generateVoucherNo() {
+        return "VCH" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+    }
+
+    public static String generateEntryId() {
+        return "ENTRY" + SNOWFLAKE.nextIdStr();
+    }
 }

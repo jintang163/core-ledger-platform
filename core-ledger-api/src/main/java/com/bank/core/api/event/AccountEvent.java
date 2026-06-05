@@ -39,5 +39,9 @@ public class AccountEvent implements Serializable {
 
     private String requestId;
 
+    private String transactionId;
+
+    private Integer transactionType;
+
     private LocalDateTime eventTime;
 }

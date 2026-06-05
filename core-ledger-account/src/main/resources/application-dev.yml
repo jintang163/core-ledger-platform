@@ -41,11 +41,37 @@ spring:
             database-strategy:
               standard:
                 sharding-column: account_id
-                sharding-algorithm-name: database-inline
+                sharding-algorithm-name: database-inline-account
             table-strategy:
               standard:
                 sharding-column: account_id
                 sharding-algorithm-name: freeze-log-inline
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+          t_transaction:
+            actual-data-nodes: ds$->{0..1}.t_transaction_$->{0..3}
+            database-strategy:
+              standard:
+                sharding-column: transaction_id
+                sharding-algorithm-name: database-inline-tx
+            table-strategy:
+              standard:
+                sharding-column: transaction_id
+                sharding-algorithm-name: transaction-inline
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+          t_transaction_entry:
+            actual-data-nodes: ds$->{0..1}.t_transaction_entry_$->{0..3}
+            database-strategy:
+              standard:
+                sharding-column: transaction_id
+                sharding-algorithm-name: database-inline-tx
+            table-strategy:
+              standard:
+                sharding-column: transaction_id
+                sharding-algorithm-name: transaction-entry-inline
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
@@ -54,10 +80,26 @@ spring:
             type: INLINE
             props:
               algorithm-expression: ds$->{Math.abs(user_id.hashCode()) % 2}
+          database-inline-account:
+            type: INLINE
+            props:
+              algorithm-expression: ds$->{Math.abs(account_id.hashCode()) % 2}
+          database-inline-tx:
+            type: INLINE
+            props:
+              algorithm-expression: ds$->{Math.abs(transaction_id.hashCode()) % 2}
           freeze-log-inline:
             type: INLINE
             props:
               algorithm-expression: t_account_freeze_log_$->{Math.abs(account_id.hashCode()) % 4}
+          transaction-inline:
+            type: INLINE
+            props:
+              algorithm-expression: t_transaction_$->{Math.abs(transaction_id.hashCode()) % 4}
+          transaction-entry-inline:
+            type: INLINE
+            props:
+              algorithm-expression: t_transaction_entry_$->{Math.abs(transaction_id.hashCode()) % 4}
         key-generators:
           snowflake:
             type: SNOWFLAKE

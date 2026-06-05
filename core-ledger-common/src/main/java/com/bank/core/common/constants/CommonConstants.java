@@ -19,6 +19,13 @@ public interface CommonConstants {
     String ROCKETMQ_TAG_ACCOUNT_FREEZE = "freeze";
     String ROCKETMQ_TAG_ACCOUNT_UNFREEZE = "unfreeze";
     String ROCKETMQ_TAG_ACCOUNT_CLOSE = "close";
+    String ROCKETMQ_TAG_TRANSACTION = "transaction";
+
+    String TRANSACTION_IDEMPOTENT_PREFIX = "transaction:idempotent:";
+    String TRANSACTION_LOCK_PREFIX = "transaction:lock:";
+    String TRANSACTION_CACHE_PREFIX = "transaction:";
+
+    Integer MAX_RETRY_TIMES = 3;
 
     String SEATA_TX_GROUP = "account-tx-group";
 

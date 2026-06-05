@@ -48,6 +48,9 @@ public class Account implements Serializable {
 
     private LocalDateTime updateTime;
 
+    @Version
+    private Integer version;
+
     @TableLogic
     private Integer deleted;
 }

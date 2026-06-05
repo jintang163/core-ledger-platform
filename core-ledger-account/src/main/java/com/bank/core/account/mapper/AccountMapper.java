@@ -68,4 +68,13 @@ public interface AccountMapper extends BaseMapper<Account> {
             @Param("amount") Long amount,
             @Param("updateTime") LocalDateTime updateTime
     );
+
+    @Update("UPDATE t_account SET balance = balance + #{amount}, version = version + 1, " +
+            "update_time = #{updateTime} WHERE account_id = #{accountId} AND version = #{version} AND deleted = 0")
+    int updateBalanceWithVersion(
+            @Param("accountId") String accountId,
+            @Param("amount") Long amount,
+            @Param("version") Integer version,
+            @Param("updateTime") LocalDateTime updateTime
+    );
 }
