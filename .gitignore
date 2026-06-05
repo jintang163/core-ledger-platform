@@ -35,3 +35,4 @@ dynamic-form-design-backend/uploads/
 *.seed
 code/
 .m2/
+.trae/

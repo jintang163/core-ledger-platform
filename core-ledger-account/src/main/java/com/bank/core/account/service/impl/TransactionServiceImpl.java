@@ -29,6 +29,7 @@ import org.redisson.api.RBucket;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.BeanUtils;
 import org.springframework.messaging.support.MessageBuilder;
+import io.seata.spring.annotation.GlobalTransactional;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,16 +52,30 @@ public class TransactionServiceImpl implements TransactionService {
     private final RocketMQTemplate rocketMQTemplate;
 
     @Override
+    @GlobalTransactional(name = "create-transaction", rollbackFor = Exception.class)
     @Transactional(rollbackFor = Exception.class)
     public TransactionVO createTransaction(TransactionCreateDTO dto) {
         log.info("开始记账, businessNo: {}, transactionType: {}", dto.getBusinessNo(), dto.getTransactionType());
 
+        if (dto.getRequestId() == null || dto.getRequestId().trim().isEmpty()) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "请求ID不能为空");
+        }
+
         String idempotentKey = CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX + dto.getBusinessNo();
-        IdempotentUtil.checkIdempotent(dto.getRequestId());
+        RBucket<String> idempotentBucket = redissonClient.getBucket(idempotentKey);
+        String cachedTransactionId = idempotentBucket.get();
+        if (cachedTransactionId != null) {
+            log.warn("幂等命中, businessNo: {}, transactionId: {}, 直接返回已有结果", dto.getBusinessNo(), cachedTransactionId);
+            Transaction existTx = transactionMapper.selectByTransactionId(cachedTransactionId);
+            if (existTx != null) {
+                return convertToVO(existTx, true);
+            }
+        }
 
         Transaction existTx = transactionMapper.selectByBusinessNo(dto.getBusinessNo());
         if (existTx != null) {
-            log.warn("重复请求, businessNo: {}, 直接返回已有结果", dto.getBusinessNo());
+            log.warn("业务单号已存在, businessNo: {}, 直接返回已有结果", dto.getBusinessNo());
+            idempotentBucket.set(existTx.getTransactionId(), 24, TimeUnit.HOURS);
             return convertToVO(existTx, true);
         }
 
@@ -70,6 +85,8 @@ public class TransactionServiceImpl implements TransactionService {
         return DistributedLockUtil.executeWithLock(lockKey, () -> {
             Transaction existAgain = transactionMapper.selectByBusinessNo(dto.getBusinessNo());
             if (existAgain != null) {
+                log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
+                idempotentBucket.set(existAgain.getTransactionId(), 24, TimeUnit.HOURS);
                 return convertToVO(existAgain, true);
             }
 
@@ -96,6 +113,8 @@ public class TransactionServiceImpl implements TransactionService {
             transactionMapper.updateById(transaction);
 
             TransactionVO vo = convertToVO(transaction, entries, accounts);
+
+            idempotentBucket.set(transactionId, 24, TimeUnit.HOURS);
 
             sendTransactionEvent(vo, dto.getRequestId(), dto.getOperator());
 

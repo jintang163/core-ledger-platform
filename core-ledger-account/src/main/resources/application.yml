@@ -22,7 +22,30 @@ dubbo:
     retries: 0
 
 seata:
-  enabled: false
+  enabled: true
+  application-id: core-ledger-account
+  tx-service-group: ${seata.tx-service-group:account-tx-group}
+  service:
+    vgroup-mapping:
+      account-tx-group: default
+    grouplist:
+      default: ${SEATA_SERVER:127.0.0.1:8091}
+  registry:
+    type: nacos
+    nacos:
+      server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+      group: SEATA_GROUP
+      namespace: public
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
+  config:
+    type: nacos
+    nacos:
+      server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+      group: SEATA_GROUP
+      namespace: public
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:nacos}
 
 management:
   endpoints:

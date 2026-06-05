@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    // 目标ECMAScript版本
+    "target": "ES2022",
+    // 模块系统
+    "module": "ESNext",
+    // 模块解析策略
+    "moduleResolution": "bundler",
+    // 启用严格类型检查
+    "strict": true,
+    // 跳过库文件的类型检查
+    "skipLibCheck": true,
+    // 确保导入可被正确解析
+    "esModuleInterop": true,
+    // 允许导入JSON文件
+    "resolveJsonModule": true,
+    // 强制使用一致的大小写
+    "forceConsistentCasingInFileNames": true,
+    // 允许从没有设置默认导出的模块中默认导入
+    "allowSyntheticDefaultImports": true,
+    // 不生成输出文件，只进行类型检查
+    "noEmit": true,
+    // 库文件
+    "lib": ["ES2023"]
+  },
+  // 需要编译的文件
+  "include": [
+    "vite.config.ts"
+  ]
+}

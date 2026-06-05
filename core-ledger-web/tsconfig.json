@@ -1,0 +1,56 @@
+{
+  "compilerOptions": {
+    // 目标ECMAScript版本
+    "target": "ES2020",
+    // 用于提供从 tsc 输出到最终输出的 JavaScript 源映射
+    "useDefineForClassFields": true,
+    // 模块系统
+    "module": "ESNext",
+    // 模块解析策略
+    "moduleResolution": "bundler",
+    // 启用严格类型检查
+    "strict": true,
+    // 跳过库文件的类型检查
+    "skipLibCheck": true,
+    // 允许从没有设置默认导出的模块中默认导入
+    "allowSyntheticDefaultImports": true,
+    // 强制使用一致的大小写
+    "forceConsistentCasingInFileNames": true,
+    // 确保每个文件都是模块
+    "isolatedModules": true,
+    // 不生成输出文件，只进行类型检查
+    "noEmit": true,
+    // 支持JSX语法
+    "jsx": "react-jsx",
+    // 解析非相对模块名的基准目录
+    "baseUrl": ".",
+    // 路径映射，配合Vite的别名配置
+    "paths": {
+      "@/*": ["src/*"]
+    },
+    // 启用装饰器支持
+    "experimentalDecorators": true,
+    // 启用装饰器元数据支持
+    "emitDecoratorMetadata": true,
+    // 允许导入JSON文件
+    "resolveJsonModule": true,
+    // 确保导入可被正确解析
+    "esModuleInterop": true,
+    // 允许未使用的局部变量
+    "noUnusedLocals": false,
+    // 允许未使用的参数
+    "noUnusedParameters": false,
+    // 库文件
+    "lib": ["ES2020", "DOM", "DOM.Iterable"]
+  },
+  // 需要编译的文件
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "src/**/*.d.ts"
+  ],
+  // 需要引用的配置文件
+  "references": [
+    { "path": "./tsconfig.node.json" }
+  ]
+}
