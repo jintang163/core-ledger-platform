@@ -1,0 +1,8 @@
+rocketmq:
+  name-server: rocketmq-namesrv:9876
+  producer:
+    group: account-producer-group
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+  consumer:
+    group: account-consumer-group

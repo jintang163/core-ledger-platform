@@ -1,0 +1,182 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0.28
+    container_name: core-ledger-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123
+      TZ: Asia/Shanghai
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./mysql/data:/var/lib/mysql
+      - ./mysql/conf:/etc/mysql/conf.d
+      - ../sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb_buffer_pool_size=1G
+      - --max_connections=500
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  nacos:
+    image: nacos/nacos-server:2.1.0
+    container_name: core-ledger-nacos
+    environment:
+      MODE: standalone
+      PREFER_HOST_MODE: hostname
+      NACOS_AUTH_ENABLE: 'false'
+      TZ: Asia/Shanghai
+    ports:
+      - "8848:8848"
+      - "9848:9848"
+    volumes:
+      - ./nacos/data:/home/nacos/data
+      - ./nacos/logs:/home/nacos/logs
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  redis:
+    image: redis:6.2.7
+    container_name: core-ledger-redis
+    command: redis-server --appendonly yes --requirepass redis123
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis/data:/data
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  rocketmq-namesrv:
+    image: apache/rocketmq:4.9.3
+    container_name: core-ledger-rocketmq-namesrv
+    command: sh mqnamesrv
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "9876:9876"
+    volumes:
+      - ./rocketmq/namesrv/logs:/home/rocketmq/logs
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  rocketmq-broker:
+    image: apache/rocketmq:4.9.3
+    container_name: core-ledger-rocketmq-broker
+    command: sh mqbroker -n rocketmq-namesrv:9876 -c /home/rocketmq/conf/broker.conf
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+    volumes:
+      - ./rocketmq/broker/logs:/home/rocketmq/logs
+      - ./rocketmq/broker/store:/home/rocketmq/store
+      - ./rocketmq/conf/broker.conf:/home/rocketmq/conf/broker.conf:ro
+    depends_on:
+      - rocketmq-namesrv
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  seata-server:
+    image: seataio/seata-server:1.5.2
+    container_name: core-ledger-seata
+    environment:
+      SEATA_PORT: 8091
+      SEATA_IP: seata-server
+      SEATA_CONFIG_NAME: file:/root/seata-config/registry
+      TZ: Asia/Shanghai
+    ports:
+      - "8091:8091"
+      - "7091:7091"
+    volumes:
+      - ./seata/config:/root/seata-config
+      - ./seata/logs:/root/logs
+    depends_on:
+      - nacos
+      - mysql
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  prometheus:
+    image: prom/prometheus:v2.35.0
+    container_name: core-ledger-prometheus
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-lifecycle
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  grafana:
+    image: grafana/grafana:8.5.2
+    container_name: core-ledger-grafana
+    environment:
+      TZ: Asia/Shanghai
+      GF_SECURITY_ADMIN_PASSWORD: admin123
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  core-ledger-account:
+    build:
+      context: ../
+      dockerfile: docker/Dockerfile
+    container_name: core-ledger-account
+    environment:
+      TZ: Asia/Shanghai
+      SERVER_PORT: 8081
+      DUBBO_PORT: 20881
+      NACOS_SERVER: nacos:8848
+      NACOS_NAMESPACE: public
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: root123
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: redis123
+      ROCKETMQ_NAMESRV: rocketmq-namesrv:9876
+      SEATA_SERVER: seata-server:8091
+    ports:
+      - "8081:8081"
+      - "20881:20881"
+    depends_on:
+      - mysql
+      - nacos
+      - redis
+      - rocketmq-broker
+      - seata-server
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+networks:
+  core-ledger-net:
+    driver: bridge

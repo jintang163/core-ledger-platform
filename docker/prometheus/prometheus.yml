@@ -1,0 +1,36 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files: []
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'core-ledger-account'
+    metrics_path: '/account/actuator/prometheus'
+    static_configs:
+      - targets: ['core-ledger-account:8081']
+    scrape_interval: 5s
+    scrape_timeout: 5s
+
+  - job_name: 'nacos'
+    metrics_path: '/nacos/actuator/prometheus'
+    static_configs:
+      - targets: ['nacos:8848']
+
+  - job_name: 'mysql'
+    static_configs:
+      - targets: ['mysql:9104']
+
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:9121']

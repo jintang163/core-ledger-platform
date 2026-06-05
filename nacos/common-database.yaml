@@ -1,0 +1,88 @@
+spring:
+  shardingsphere:
+    datasource:
+      names: ds0,ds1
+      ds0:
+        type: com.zaxxer.hikari.HikariDataSource
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        jdbc-url: jdbc:mysql://mysql:3306/core_ledger_0?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+        username: root
+        password: root123
+        hikari:
+          minimum-idle: 5
+          maximum-pool-size: 20
+          idle-timeout: 30000
+          connection-timeout: 30000
+      ds1:
+        type: com.zaxxer.hikari.HikariDataSource
+        driver-class-name: com.mysql.cj.jdbc.Driver
+        jdbc-url: jdbc:mysql://mysql:3306/core_ledger_1?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+        username: root
+        password: root123
+        hikari:
+          minimum-idle: 5
+          maximum-pool-size: 20
+          idle-timeout: 30000
+          connection-timeout: 30000
+    rules:
+      sharding:
+        tables:
+          t_account:
+            actual-data-nodes: ds$->{0..1}.t_account_$->{0..3}
+            database-strategy:
+              standard:
+                sharding-column: user_id
+                sharding-algorithm-name: database-inline
+            table-strategy:
+              standard:
+                sharding-column: account_id
+                sharding-algorithm-name: table-inline
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+          t_account_freeze_log:
+            actual-data-nodes: ds$->{0..1}.t_account_freeze_log_$->{0..3}
+            database-strategy:
+              standard:
+                sharding-column: account_id
+                sharding-algorithm-name: database-inline
+            table-strategy:
+              standard:
+                sharding-column: account_id
+                sharding-algorithm-name: table-inline
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+          t_account_tcc_log:
+            actual-data-nodes: ds$->{0..1}.t_account_tcc_log_$->{0..1}
+            database-strategy:
+              standard:
+                sharding-column: account_id
+                sharding-algorithm-name: database-inline
+            table-strategy:
+              standard:
+                sharding-column: tx_id
+                sharding-algorithm-name: tcc-log-inline
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+        sharding-algorithms:
+          database-inline:
+            type: INLINE
+            props:
+              algorithm-expression: ds$->{Math.abs(user_id.hashCode()) % 2}
+          table-inline:
+            type: INLINE
+            props:
+              algorithm-expression: t_account_$->{Math.abs(account_id.hashCode()) % 4}
+          tcc-log-inline:
+            type: INLINE
+            props:
+              algorithm-expression: t_account_tcc_log_$->{Math.abs(tx_id.hashCode()) % 2}
+        key-generators:
+          snowflake:
+            type: SNOWFLAKE
+            props:
+              worker-id: 1
+    props:
+      sql-show: false

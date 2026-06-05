@@ -1,0 +1,27 @@
+spring:
+  application:
+    name: core-ledger-account
+  profiles:
+    active: dev
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:public}
+        group: CORE_LEDGER_GROUP
+      config:
+        server-addr: ${NACOS_SERVER:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:public}
+        group: CORE_LEDGER_GROUP
+        file-extension: yaml
+        prefix: core-ledger-account
+        shared-configs:
+          - data-id: common-database.yaml
+            group: CORE_LEDGER_GROUP
+            refresh: true
+          - data-id: common-redis.yaml
+            group: CORE_LEDGER_GROUP
+            refresh: true
+          - data-id: common-rocketmq.yaml
+            group: CORE_LEDGER_GROUP
+            refresh: true
