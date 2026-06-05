@@ -40,6 +40,10 @@ public class Account implements Serializable {
 
     private String freezeOperator;
 
+    private LocalDateTime openTime;
+
+    private LocalDateTime closeTime;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;

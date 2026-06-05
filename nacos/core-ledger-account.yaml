@@ -24,7 +24,7 @@ logging:
   level:
     root: INFO
     com.bank.core: DEBUG
-    io.seata: DEBUG
+
     org.apache.shardingsphere: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"

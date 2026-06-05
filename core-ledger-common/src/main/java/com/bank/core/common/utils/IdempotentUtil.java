@@ -23,8 +23,9 @@ public class IdempotentUtil {
     }
 
     public static void checkIdempotent(String requestId, long ttl, TimeUnit timeUnit) {
-        if (requestId == null || requestId.isEmpty()) {
-            return;
+        if (requestId == null || requestId.trim().isEmpty()) {
+            log.warn("请求ID不能为空");
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "请求ID不能为空");
         }
         String key = CommonConstants.ACCOUNT_IDEMPOTENT_PREFIX + requestId;
         RBucket<String> bucket = redissonClient.getBucket(key);

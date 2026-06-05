@@ -28,15 +28,11 @@ spring:
       sharding:
         tables:
           t_account:
-            actual-data-nodes: ds$->{0..1}.t_account_$->{0..3}
+            actual-data-nodes: ds$->{0..1}.t_account
             database-strategy:
               standard:
                 sharding-column: user_id
                 sharding-algorithm-name: database-inline
-            table-strategy:
-              standard:
-                sharding-column: account_id
-                sharding-algorithm-name: table-inline
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
@@ -49,20 +45,7 @@ spring:
             table-strategy:
               standard:
                 sharding-column: account_id
-                sharding-algorithm-name: table-inline
-            key-generate-strategy:
-              column: id
-              key-generator-name: snowflake
-          t_account_tcc_log:
-            actual-data-nodes: ds$->{0..1}.t_account_tcc_log_$->{0..1}
-            database-strategy:
-              standard:
-                sharding-column: account_id
-                sharding-algorithm-name: database-inline
-            table-strategy:
-              standard:
-                sharding-column: tx_id
-                sharding-algorithm-name: tcc-log-inline
+                sharding-algorithm-name: freeze-log-inline
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
@@ -71,14 +54,10 @@ spring:
             type: INLINE
             props:
               algorithm-expression: ds$->{Math.abs(user_id.hashCode()) % 2}
-          table-inline:
+          freeze-log-inline:
             type: INLINE
             props:
-              algorithm-expression: t_account_$->{Math.abs(account_id.hashCode()) % 4}
-          tcc-log-inline:
-            type: INLINE
-            props:
-              algorithm-expression: t_account_tcc_log_$->{Math.abs(tx_id.hashCode()) % 2}
+              algorithm-expression: t_account_freeze_log_$->{Math.abs(account_id.hashCode()) % 4}
         key-generators:
           snowflake:
             type: SNOWFLAKE

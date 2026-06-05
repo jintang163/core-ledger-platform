@@ -17,5 +17,6 @@ public class AccountCloseDTO implements Serializable {
 
     private String operator;
 
+    @NotBlank(message = "请求ID不能为空")
     private String requestId;
 }

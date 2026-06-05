@@ -3,15 +3,14 @@ package com.bank.core.account.service.impl;
 import com.alibaba.fastjson.JSON;
 import com.bank.core.account.entity.Account;
 import com.bank.core.account.entity.AccountFreezeLog;
-import com.bank.core.account.mapper.AccountMapper;
 import com.bank.core.account.mapper.AccountFreezeLogMapper;
+import com.bank.core.account.mapper.AccountMapper;
 import com.bank.core.account.service.AccountService;
 import com.bank.core.api.dto.AccountCloseDTO;
 import com.bank.core.api.dto.AccountCreateDTO;
 import com.bank.core.api.dto.AccountFreezeDTO;
 import com.bank.core.api.dto.AccountUnfreezeDTO;
 import com.bank.core.api.event.AccountEvent;
-import com.bank.core.api.tcc.AccountTccService;
 import com.bank.core.api.vo.AccountVO;
 import com.bank.core.common.constants.CommonConstants;
 import com.bank.core.common.enums.*;
@@ -20,8 +19,6 @@ import com.bank.core.common.utils.AmountUtil;
 import com.bank.core.common.utils.DistributedLockUtil;
 import com.bank.core.common.utils.IdempotentUtil;
 import com.bank.core.common.utils.SnowflakeIdGenerator;
-import io.seata.spring.annotation.GlobalTransactional;
-import io.seata.rm.tcc.api.BusinessActionContext;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.rocketmq.spring.core.RocketMQTemplate;
@@ -43,12 +40,11 @@ public class AccountServiceImpl implements AccountService {
 
     private final AccountMapper accountMapper;
     private final AccountFreezeLogMapper freezeLogMapper;
-    private final AccountTccService accountTccService;
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
 
     @Override
-    @GlobalTransactional(name = "create-account", rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public AccountVO createAccount(AccountCreateDTO dto) {
         log.info("创建账户开始, userId: {}, accountType: {}, currency: {}",
                 dto.getUserId(), dto.getAccountType(), dto.getCurrency());
@@ -68,26 +64,26 @@ public class AccountServiceImpl implements AccountService {
             }
 
             String accountId = SnowflakeIdGenerator.nextIdStr();
-            BusinessActionContext actionContext = new BusinessActionContext();
-            actionContext.setXid(accountId);
+            String accountNo = SnowflakeIdGenerator.generateAccountNo();
 
-            boolean prepared = accountTccService.prepareCreate(
-                    actionContext,
-                    accountId,
-                    dto.getUserId(),
-                    dto.getAccountType(),
-                    dto.getCurrency(),
-                    dto.getInitBalance()
-            );
+            Account account = new Account();
+            account.setId(SnowflakeIdGenerator.nextId());
+            account.setAccountId(accountId);
+            account.setAccountNo(accountNo);
+            account.setUserId(dto.getUserId());
+            account.setAccountType(dto.getAccountType());
+            account.setCurrency(dto.getCurrency());
+            account.setBalance(AmountUtil.yuanToFen(dto.getInitBalance()));
+            account.setStatus(AccountStatusEnum.NORMAL.getCode());
+            account.setFreezeType(null);
+            account.setOpenTime(LocalDateTime.now());
+            account.setCloseTime(null);
+            account.setCreateTime(LocalDateTime.now());
+            account.setUpdateTime(LocalDateTime.now());
+            account.setDeleted(0);
 
-            if (!prepared) {
-                log.error("创建账户TCC Try阶段失败, userId: {}", dto.getUserId());
-                throw new BusinessException(ResultCodeEnum.TRANSACTION_FAILED);
-            }
+            accountMapper.insert(account);
 
-            accountTccService.commit(actionContext);
-
-            Account account = accountMapper.selectByAccountId(accountId);
             AccountVO accountVO = convertToVO(account);
 
             sendAccountEvent(accountVO, CommonConstants.ROCKETMQ_TAG_ACCOUNT_CREATE,
@@ -137,7 +133,7 @@ public class AccountServiceImpl implements AccountService {
     }
 
     @Override
-    @GlobalTransactional(name = "freeze-account", rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public AccountVO freezeAccount(AccountFreezeDTO dto) {
         log.info("冻结账户开始, accountId: {}, freezeType: {}", dto.getAccountId(), dto.getFreezeType());
 
@@ -158,29 +154,15 @@ public class AccountServiceImpl implements AccountService {
         String lockKey = CommonConstants.ACCOUNT_LOCK_PREFIX + dto.getAccountId();
 
         return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            BusinessActionContext actionContext = new BusinessActionContext();
-            actionContext.setXid(dto.getAccountId() + System.currentTimeMillis());
-
-            boolean prepared = accountTccService.prepareFreeze(
-                    actionContext,
-                    dto.getAccountId(),
-                    dto.getFreezeType(),
-                    dto.getRemark(),
-                    dto.getOperator()
-            );
-
-            if (!prepared) {
-                log.error("冻结账户TCC Try阶段失败, accountId: {}", dto.getAccountId());
-                throw new BusinessException(ResultCodeEnum.TRANSACTION_FAILED);
-            }
-
-            accountTccService.commitFreeze(actionContext);
+            account.setStatus(AccountStatusEnum.FROZEN.getCode());
+            account.setFreezeType(dto.getFreezeType());
+            account.setUpdateTime(LocalDateTime.now());
+            accountMapper.updateById(account);
 
             recordFreezeLog(dto.getAccountId(), 1, dto.getFreezeType(),
                     dto.getRemark(), dto.getOperator());
 
-            Account updatedAccount = accountMapper.selectByAccountId(dto.getAccountId());
-            AccountVO accountVO = convertToVO(updatedAccount);
+            AccountVO accountVO = convertToVO(account);
 
             sendAccountEvent(accountVO, CommonConstants.ROCKETMQ_TAG_ACCOUNT_FREEZE,
                     AccountStatusEnum.NORMAL.getCode(), AccountStatusEnum.FROZEN.getCode(),
@@ -194,7 +176,7 @@ public class AccountServiceImpl implements AccountService {
     }
 
     @Override
-    @GlobalTransactional(name = "unfreeze-account", rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public AccountVO unfreezeAccount(AccountUnfreezeDTO dto) {
         log.info("解冻账户开始, accountId: {}, freezeType: {}", dto.getAccountId(), dto.getFreezeType());
 
@@ -211,29 +193,18 @@ public class AccountServiceImpl implements AccountService {
         String lockKey = CommonConstants.ACCOUNT_LOCK_PREFIX + dto.getAccountId();
 
         return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            BusinessActionContext actionContext = new BusinessActionContext();
-            actionContext.setXid(dto.getAccountId() + System.currentTimeMillis());
-
-            boolean prepared = accountTccService.prepareUnfreeze(
-                    actionContext,
-                    dto.getAccountId(),
-                    dto.getFreezeType(),
-                    dto.getRemark(),
-                    dto.getOperator()
-            );
-
-            if (!prepared) {
-                log.error("解冻账户TCC Try阶段失败, accountId: {}", dto.getAccountId());
-                throw new BusinessException(ResultCodeEnum.TRANSACTION_FAILED);
-            }
-
-            accountTccService.commitUnfreeze(actionContext);
+            account.setStatus(AccountStatusEnum.NORMAL.getCode());
+            account.setFreezeType(null);
+            account.setFreezeRemark(null);
+            account.setFreezeTime(null);
+            account.setFreezeOperator(null);
+            account.setUpdateTime(LocalDateTime.now());
+            accountMapper.updateById(account);
 
             recordFreezeLog(dto.getAccountId(), 2, dto.getFreezeType(),
                     dto.getRemark(), dto.getOperator());
 
-            Account updatedAccount = accountMapper.selectByAccountId(dto.getAccountId());
-            AccountVO accountVO = convertToVO(updatedAccount);
+            AccountVO accountVO = convertToVO(account);
 
             sendAccountEvent(accountVO, CommonConstants.ROCKETMQ_TAG_ACCOUNT_UNFREEZE,
                     AccountStatusEnum.FROZEN.getCode(), AccountStatusEnum.NORMAL.getCode(),
@@ -247,7 +218,7 @@ public class AccountServiceImpl implements AccountService {
     }
 
     @Override
-    @GlobalTransactional(name = "close-account", rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public void closeAccount(AccountCloseDTO dto) {
         log.info("销户开始, accountId: {}", dto.getAccountId());
 
@@ -264,25 +235,15 @@ public class AccountServiceImpl implements AccountService {
         String lockKey = CommonConstants.ACCOUNT_LOCK_PREFIX + dto.getAccountId();
 
         DistributedLockUtil.executeWithLock(lockKey, () -> {
-            BusinessActionContext actionContext = new BusinessActionContext();
-            actionContext.setXid(dto.getAccountId() + System.currentTimeMillis());
-
-            boolean prepared = accountTccService.prepareClose(
-                    actionContext,
-                    dto.getAccountId(),
-                    dto.getRemark(),
-                    dto.getOperator()
-            );
-
-            if (!prepared) {
-                log.error("销户TCC Try阶段失败, accountId: {}", dto.getAccountId());
-                throw new BusinessException(ResultCodeEnum.TRANSACTION_FAILED);
-            }
-
-            accountTccService.commitClose(actionContext);
+            account.setStatus(AccountStatusEnum.CLOSED.getCode());
+            account.setFreezeType(null);
+            account.setBalance(0L);
+            account.setCloseTime(LocalDateTime.now());
+            account.setUpdateTime(LocalDateTime.now());
+            account.setDeleted(1);
+            accountMapper.updateById(account);
 
             AccountVO accountVO = convertToVO(account);
-            accountVO.setStatus(AccountStatusEnum.CLOSED.getCode());
 
             sendAccountEvent(accountVO, CommonConstants.ROCKETMQ_TAG_ACCOUNT_CLOSE,
                     account.getStatus(), AccountStatusEnum.CLOSED.getCode(),

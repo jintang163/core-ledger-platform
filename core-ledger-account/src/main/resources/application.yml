@@ -22,27 +22,7 @@ dubbo:
     retries: 0
 
 seata:
-  enabled: true
-  application-id: core-ledger-account
-  tx-service-group: account-tx-group
-  service:
-    vgroup-mapping:
-      account-tx-group: default
-    grouplist:
-      default: ${SEATA_SERVER:127.0.0.1:8091}
-  registry:
-    type: nacos
-    nacos:
-      server-addr: ${NACOS_SERVER:127.0.0.1:8848}
-      namespace: ${NACOS_NAMESPACE:public}
-      group: SEATA_GROUP
-      cluster: default
-  config:
-    type: nacos
-    nacos:
-      server-addr: ${NACOS_SERVER:127.0.0.1:8848}
-      namespace: ${NACOS_NAMESPACE:public}
-      group: SEATA_GROUP
+  enabled: false
 
 management:
   endpoints:
@@ -61,7 +41,7 @@ logging:
   level:
     root: INFO
     com.bank.core: DEBUG
-    io.seata: DEBUG
+
     org.apache.shardingsphere: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"

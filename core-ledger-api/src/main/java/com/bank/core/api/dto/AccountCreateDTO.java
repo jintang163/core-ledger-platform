@@ -26,5 +26,6 @@ public class AccountCreateDTO implements Serializable {
     @PositiveOrZero(message = "初始余额不能为负数")
     private BigDecimal initBalance;
 
+    @NotBlank(message = "请求ID不能为空")
     private String requestId;
 }

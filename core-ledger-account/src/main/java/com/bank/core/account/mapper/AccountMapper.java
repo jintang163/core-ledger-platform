@@ -51,10 +51,13 @@ public interface AccountMapper extends BaseMapper<Account> {
     );
 
     @Update("UPDATE t_account SET balance = 0, status = #{status}, " +
-            "update_time = #{updateTime} WHERE account_id = #{accountId} AND deleted = 0")
+            "freeze_type = NULL, freeze_remark = NULL, freeze_time = NULL, freeze_operator = NULL, " +
+            "close_time = #{closeTime}, update_time = #{updateTime} " +
+            "WHERE account_id = #{accountId} AND deleted = 0")
     int closeAccount(
             @Param("accountId") String accountId,
             @Param("status") Integer status,
+            @Param("closeTime") LocalDateTime closeTime,
             @Param("updateTime") LocalDateTime updateTime
     );
 
@@ -62,7 +65,7 @@ public interface AccountMapper extends BaseMapper<Account> {
             "update_time = #{updateTime} WHERE account_id = #{accountId} AND deleted = 0")
     int addBalance(
             @Param("accountId") String accountId,
-            @Param("amount") BigDecimal amount,
+            @Param("amount") Long amount,
             @Param("updateTime") LocalDateTime updateTime
     );
 }

@@ -37,6 +37,14 @@ public class AccountVO implements Serializable {
 
     private String freezeRemark;
 
+    private LocalDateTime freezeTime;
+
+    private String freezeOperator;
+
+    private LocalDateTime openTime;
+
+    private LocalDateTime closeTime;
+
     private LocalDateTime createTime;
 
     private LocalDateTime updateTime;
