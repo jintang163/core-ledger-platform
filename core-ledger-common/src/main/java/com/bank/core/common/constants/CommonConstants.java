@@ -58,4 +58,70 @@ public interface CommonConstants {
     String TRACE_ID = "traceId";
     String REQUEST_ID = "requestId";
     String USER_ID = "userId";
+
+    // ==================== 热点账户与高并发相关常量 ====================
+
+    /** 默认影子账户分片数量 */
+    Integer DEFAULT_SHARD_COUNT = 10;
+
+    /** 最小影子账户分片数量 */
+    Integer MIN_SHARD_COUNT = 3;
+
+    /** 最大影子账户分片数量 */
+    Integer MAX_SHARD_COUNT = 100;
+
+    /** 影子账户ID后缀前缀 */
+    String SHARD_ID_SUFFIX = "_SHARD_";
+
+    /** 热点账户锁前缀 */
+    String HOT_ACCOUNT_LOCK_PREFIX = "account:hot:lock:";
+
+    /** 影子账户缓存前缀 */
+    String SHARD_ACCOUNT_CACHE_PREFIX = "account:shard:";
+
+    /** 热点账户检测阈值（每秒交易数） */
+    Integer HOT_ACCOUNT_THRESHOLD = 100;
+
+    /** 账户级分布式锁前缀 */
+    String ACCOUNT_BALANCE_LOCK_PREFIX = "account:balance:lock:";
+
+    /** 账户级锁等待时间（秒） */
+    Long ACCOUNT_LOCK_WAIT_TIME = 1L;
+
+    /** 账户级锁持有时间（秒） */
+    Long ACCOUNT_LOCK_LEASE_TIME = 5L;
+
+    /** ==================== 重试与退避相关常量 ==================== */
+
+    /** 乐观锁最大重试次数 */
+    Integer OPTIMISTIC_LOCK_MAX_RETRY = 5;
+
+    /** 指数退避初始延迟（毫秒） */
+    Long RETRY_INITIAL_DELAY = 100L;
+
+    /** 指数退避最大延迟（毫秒） */
+    Long RETRY_MAX_DELAY = 5000L;
+
+    /** 指数退避乘数 */
+    Double RETRY_BACKOFF_MULTIPLIER = 2.0;
+
+    /** ==================== 缓冲记账相关常量 ==================== */
+
+    /** 缓冲记账流水缓存前缀 */
+    String BUFFER_LOG_CACHE_PREFIX = "account:buffer:";
+
+    /** 缓冲记账批量处理大小 */
+    Integer BUFFER_BATCH_SIZE = 100;
+
+    /** 缓冲记账定时任务间隔（毫秒） */
+    Long BUFFER_PROCESS_INTERVAL = 1000L;
+
+    /** 缓冲记账最大延迟处理时间（秒） */
+    Integer BUFFER_MAX_DELAY = 5;
+
+    /** 影子账户归并定时任务Cron */
+    String SHARD_MERGE_CRON = "0 0 2 * * ?";
+
+    /** 影子账户归并锁前缀 */
+    String SHARD_MERGE_LOCK_PREFIX = "account:shard:merge:";
 }

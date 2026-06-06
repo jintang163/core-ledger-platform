@@ -2,12 +2,17 @@ package com.bank.core.account.service.impl;
 
 import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.bank.core.account.config.HotAccountConfig;
 import com.bank.core.account.entity.Account;
+import com.bank.core.account.entity.AccountShard;
 import com.bank.core.account.entity.Transaction;
 import com.bank.core.account.entity.TransactionEntry;
 import com.bank.core.account.mapper.AccountMapper;
 import com.bank.core.account.mapper.TransactionEntryMapper;
 import com.bank.core.account.mapper.TransactionMapper;
+import com.bank.core.account.service.AccountLockService;
+import com.bank.core.account.service.BufferAccountingService;
+import com.bank.core.account.service.HotAccountService;
 import com.bank.core.account.service.TransactionService;
 import com.bank.core.api.dto.TransactionCreateDTO;
 import com.bank.core.api.dto.TransactionEntryDTO;
@@ -20,7 +25,7 @@ import com.bank.core.common.enums.*;
 import com.bank.core.common.exception.BusinessException;
 import com.bank.core.common.utils.AmountUtil;
 import com.bank.core.common.utils.DistributedLockUtil;
-import com.bank.core.common.utils.IdempotentUtil;
+import com.bank.core.common.utils.RetryUtil;
 import com.bank.core.common.utils.SnowflakeIdGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -40,6 +45,17 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+/**
+ * 交易服务实现类（增强版-支持高并发与热点账户处理）
+ *
+ * 高并发特性：
+ * 1. 热点账户分片：将热点账户拆分为多个影子子账户，随机路由扣款，定期归并
+ * 2. 缓冲记账：先记录流水并异步批量更新余额，适用于允许短暂弱一致的场景
+ * 3. 乐观锁重试：更新余额失败时自动重试，使用指数退避策略
+ * 4. 分布式锁：对同一账户操作加锁（Redis/Redisson），防止并发冲突
+ *
+ * 配置开关：通过HotAccountConfig配置类控制各项功能的启用/禁用
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -50,6 +66,18 @@ public class TransactionServiceImpl implements TransactionService {
     private final AccountMapper accountMapper;
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
+
+    /** 热点账户服务 - 提供分片、路由、归并功能 */
+    private final HotAccountService hotAccountService;
+
+    /** 缓冲记账服务 - 提供流水记录、异步批量更新功能 */
+    private final BufferAccountingService bufferAccountingService;
+
+    /** 账户级分布式锁服务 - 提供细粒度的账户级别锁 */
+    private final AccountLockService accountLockService;
+
+    /** 热点账户配置 - 控制各项高并发功能的启用/禁用 */
+    private final HotAccountConfig hotAccountConfig;
 
     @Override
     @GlobalTransactional(name = "create-transaction", rollbackFor = Exception.class)
@@ -224,6 +252,12 @@ public class TransactionServiceImpl implements TransactionService {
         log.info("借贷平衡校验通过, 借方总额: {}, 贷方总额: {}", debitTotal, creditTotal);
     }
 
+    /**
+     * 校验并准备账户
+     * 增强功能：
+     * 1. 热点账户：校验总可用余额（主账户 + 所有影子账户）
+     * 2. 缓冲记账：校验可用余额（账户余额 + 待处理缓冲金额）
+     */
     private List<Account> validateAndPrepareAccounts(List<TransactionEntryDTO> entries) {
         List<Account> accounts = new ArrayList<>();
         for (TransactionEntryDTO entry : entries) {
@@ -241,10 +275,27 @@ public class TransactionServiceImpl implements TransactionService {
             DebitCreditEnum direction = DebitCreditEnum.getByCode(entry.getDirection());
             if (DebitCreditEnum.CREDIT.equals(direction)) {
                 long amountFen = AmountUtil.yuanToFen(entry.getAmount());
-                if (account.getBalance() < amountFen) {
+
+                long availableBalance = account.getBalance();
+
+                if (hotAccountConfig.getHot().isEnabled() && hotAccountConfig.getHot().isShardingEnabled()) {
+                    if (hotAccountService.isHotAccount(entry.getAccountId())) {
+                        availableBalance = hotAccountService.getTotalAvailableBalance(entry.getAccountId());
+                        log.debug("热点账户余额校验, accountId: {}, 总可用余额: {}分", entry.getAccountId(), availableBalance);
+                    }
+                }
+
+                if (hotAccountConfig.getHot().isEnabled() && hotAccountConfig.getHot().isBufferEnabled()) {
+                    if (bufferAccountingService.isBufferEnabled(entry.getAccountId())) {
+                        availableBalance = bufferAccountingService.getAvailableBalance(entry.getAccountId());
+                        log.debug("缓冲记账账户余额校验, accountId: {}, 可用余额: {}分", entry.getAccountId(), availableBalance);
+                    }
+                }
+
+                if (availableBalance < amountFen) {
                     throw new BusinessException(ResultCodeEnum.INSUFFICIENT_BALANCE,
                             "账户余额不足, accountId: " + entry.getAccountId() +
-                                    ", 余额: " + AmountUtil.fenToYuan(account.getBalance()) +
+                                    ", 可用余额: " + AmountUtil.fenToYuan(availableBalance) +
                                     ", 需要: " + entry.getAmount());
                 }
             }
@@ -254,51 +305,116 @@ public class TransactionServiceImpl implements TransactionService {
         return accounts;
     }
 
+    /**
+     * 更新账户余额（增强版-支持高并发与热点账户处理）
+     *
+     * 高并发特性集成：
+     * 1. 账户级分布式锁：对涉及的所有账户加锁，防止并发冲突
+     * 2. 乐观锁指数退避重试：使用RetryUtil进行带指数退避的自动重试
+     * 3. 热点账户分片：热点账户的扣款操作路由到影子子账户
+     *
+     * 处理流程：
+     * 1. 提取所有涉及的账户ID，按字典序排序后获取分布式锁（防止死锁）
+     * 2. 在锁保护下执行余额更新
+     * 3. 对于热点账户的扣款（贷方）操作，路由到影子子账户执行
+     * 4. 余额更新使用乐观锁+版本号机制
+     * 5. 乐观锁冲突时使用指数退避策略自动重试
+     *
+     * @param accounts 账户列表
+     * @param entries 交易分录列表
+     */
     private void updateAccountBalancesWithRetry(List<Account> accounts, List<TransactionEntryDTO> entries) {
-        int retryTimes = 0;
-        while (retryTimes < CommonConstants.MAX_RETRY_TIMES) {
-            try {
-                for (int i = 0; i < entries.size(); i++) {
-                    TransactionEntryDTO entry = entries.get(i);
-                    Account account = accounts.get(i);
+        List<String> accountIds = entries.stream()
+                .map(TransactionEntryDTO::getAccountId)
+                .distinct()
+                .toList();
 
-                    DebitCreditEnum direction = DebitCreditEnum.getByCode(entry.getDirection());
-                    long amountFen = AmountUtil.yuanToFen(entry.getAmount());
+        if (hotAccountConfig.getHot().isEnabled() && hotAccountConfig.getHot().isAccountLockEnabled()) {
+            accountLockService.executeWithMultiAccountLock(accountIds, () -> {
+                doUpdateAccountBalances(accounts, entries);
+                return null;
+            });
+        } else {
+            doUpdateAccountBalances(accounts, entries);
+        }
+    }
 
-                    long changeAmount = DebitCreditEnum.DEBIT.equals(direction) ? amountFen : -amountFen;
+    /**
+     * 执行实际的账户余额更新
+     * 支持乐观锁指数退避重试和热点账户分片
+     */
+    private void doUpdateAccountBalances(List<Account> accounts, List<TransactionEntryDTO> entries) {
+        if (hotAccountConfig.getHot().isEnabled() && hotAccountConfig.getHot().isOptimisticRetryEnabled()) {
+            RetryUtil.executeWithRetry(() -> {
+                updateBalancesInternal(accounts, entries);
+                return null;
+            });
+        } else {
+            updateBalancesInternal(accounts, entries);
+        }
+    }
 
-                    Account freshAccount = accountMapper.selectByAccountId(entry.getAccountId());
-                    if (freshAccount == null) {
-                        throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
-                    }
+    /**
+     * 内部余额更新逻辑
+     * 核心处理：
+     * 1. 普通账户：直接更新主账户余额
+     * 2. 热点账户扣款（贷方）：路由到影子子账户更新
+     * 3. 热点账户入账（借方）：直接更新主账户余额
+     *
+     * 会计处理逻辑：
+     * - 借方（DEBIT）：资产/费用增加，负债/权益减少 → 余额增加
+     * - 贷方（CREDIT）：资产/费用减少，负债/权益增加 → 余额减少
+     *
+     * 热点账户处理：
+     * - 扣款（CREDIT）：路由到影子账户，分散并发压力
+     * - 入账（DEBIT）：直接入主账户，保证资金可见性
+     */
+    private void updateBalancesInternal(List<Account> accounts, List<TransactionEntryDTO> entries) {
+        for (int i = 0; i < entries.size(); i++) {
+            TransactionEntryDTO entry = entries.get(i);
+            Account account = accounts.get(i);
 
-                    int updated = accountMapper.updateBalanceWithVersion(
-                            entry.getAccountId(),
-                            changeAmount,
-                            freshAccount.getVersion(),
-                            LocalDateTime.now()
-                    );
+            DebitCreditEnum direction = DebitCreditEnum.getByCode(entry.getDirection());
+            long amountFen = AmountUtil.yuanToFen(entry.getAmount());
+            long changeAmount = DebitCreditEnum.DEBIT.equals(direction) ? amountFen : -amountFen;
 
-                    if (updated == 0) {
-                        throw new BusinessException(ResultCodeEnum.CONCURRENT_UPDATE_FAILED);
-                    }
+            boolean isHotShardingEnabled = hotAccountConfig.getHot().isEnabled()
+                    && hotAccountConfig.getHot().isShardingEnabled()
+                    && hotAccountService.isHotAccount(entry.getAccountId());
 
-                    account.setVersion(freshAccount.getVersion() + 1);
-                    account.setBalance(freshAccount.getBalance() + changeAmount);
+            if (isHotShardingEnabled && DebitCreditEnum.CREDIT.equals(direction)) {
+                AccountShard shard = hotAccountService.routeShard(entry.getAccountId());
+                log.debug("热点账户扣款路由到影子账户, accountId: {}, shardId: {}, amount: {}分",
+                        entry.getAccountId(), shard.getShardId(), changeAmount);
+
+                boolean shardUpdated = hotAccountService.updateShardBalance(shard.getShardId(), changeAmount);
+                if (!shardUpdated) {
+                    throw new BusinessException(ResultCodeEnum.CONCURRENT_UPDATE_FAILED,
+                            "影子账户余额更新失败, shardId: " + shard.getShardId());
                 }
-                return;
-            } catch (BusinessException e) {
-                retryTimes++;
-                if (retryTimes >= CommonConstants.MAX_RETRY_TIMES) {
-                    log.error("更新余额失败, 已重试{}次", retryTimes, e);
-                    throw e;
+
+                Account freshAccount = accountMapper.selectByAccountId(entry.getAccountId());
+                account.setVersion(freshAccount.getVersion());
+                account.setBalance(freshAccount.getBalance() + changeAmount);
+            } else {
+                Account freshAccount = accountMapper.selectByAccountId(entry.getAccountId());
+                if (freshAccount == null) {
+                    throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
                 }
-                log.warn("更新余额冲突, 第{}次重试", retryTimes);
-                try {
-                    Thread.sleep(100 * retryTimes);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
+
+                int updated = accountMapper.updateBalanceWithVersion(
+                        entry.getAccountId(),
+                        changeAmount,
+                        freshAccount.getVersion(),
+                        LocalDateTime.now()
+                );
+
+                if (updated == 0) {
+                    throw new BusinessException(ResultCodeEnum.CONCURRENT_UPDATE_FAILED);
                 }
+
+                account.setVersion(freshAccount.getVersion() + 1);
+                account.setBalance(freshAccount.getBalance() + changeAmount);
             }
         }
     }
@@ -414,10 +530,25 @@ public class TransactionServiceImpl implements TransactionService {
         }
     }
 
+    /**
+     * 删除账户相关缓存
+     * 包括：
+     * 1. 普通账户缓存
+     * 2. 热点账户状态缓存
+     * 3. 影子账户分片缓存
+     */
     private void deleteAccountCaches(List<Account> accounts) {
         for (Account account : accounts) {
-            String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + account.getAccountId();
+            String accountId = account.getAccountId();
+
+            String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
             redissonClient.getBucket(cacheKey).delete();
+
+            String hotCacheKey = CommonConstants.HOT_ACCOUNT_LOCK_PREFIX + accountId;
+            redissonClient.getBucket(hotCacheKey).delete();
+
+            String shardCacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + accountId;
+            redissonClient.getBucket(shardCacheKey).delete();
         }
     }
 }

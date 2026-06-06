@@ -57,4 +57,8 @@ public class SnowflakeIdGenerator {
     public static String generateBatchItemId() {
         return "ITEM" + SNOWFLAKE.nextIdStr();
     }
+
+    public static String generateBufferId() {
+        return "BUF" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+    }
 }

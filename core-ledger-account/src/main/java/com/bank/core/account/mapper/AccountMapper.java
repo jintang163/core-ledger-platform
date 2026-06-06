@@ -7,8 +7,8 @@ import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
-import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Mapper
 public interface AccountMapper extends BaseMapper<Account> {
@@ -77,4 +77,7 @@ public interface AccountMapper extends BaseMapper<Account> {
             @Param("version") Integer version,
             @Param("updateTime") LocalDateTime updateTime
     );
+
+    @Select("SELECT * FROM t_account WHERE hot_status IN (2, 3) AND deleted = 0")
+    List<Account> selectAllHotAccounts();
 }

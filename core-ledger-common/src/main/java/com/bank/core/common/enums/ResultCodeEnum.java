@@ -47,7 +47,14 @@ public enum ResultCodeEnum {
     BATCH_TRANSFER_EMPTY(6001, "批量转账明细不能为空"),
     BATCH_TRANSFER_TOO_MANY_ITEMS(6002, "批量转账明细超过最大条数"),
     BATCH_TRANSFER_ORDER_NOT_EXIST(6003, "批量转账订单不存在"),
-    BATCH_TRANSFER_ITEM_NOT_EXIST(6004, "批量转账明细不存在");
+    BATCH_TRANSFER_ITEM_NOT_EXIST(6004, "批量转账明细不存在"),
+
+    BUFFER_LOG_NOT_EXIST(7001, "缓冲流水不存在"),
+    BUFFER_LOG_RETRY_EXCEEDED(7002, "缓冲流水重试次数超限"),
+
+    ACCOUNT_STATUS_ERROR(8001, "账户状态异常"),
+    HOT_ACCOUNT_SHARD_FAILED(8002, "热点账户分片失败"),
+    HOT_ACCOUNT_MERGE_FAILED(8003, "热点账户归并失败");
 
     private final Integer code;
     private final String message;
