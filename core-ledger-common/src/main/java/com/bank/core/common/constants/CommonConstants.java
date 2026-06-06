@@ -25,7 +25,27 @@ public interface CommonConstants {
     String TRANSACTION_LOCK_PREFIX = "transaction:lock:";
     String TRANSACTION_CACHE_PREFIX = "transaction:";
 
+    String PAYMENT_IDEMPOTENT_PREFIX = "payment:idempotent:";
+    String PAYMENT_LOCK_PREFIX = "payment:lock:";
+    String PAYMENT_CACHE_PREFIX = "payment:";
+
+    String TRANSFER_IDEMPOTENT_PREFIX = "transfer:idempotent:";
+    String TRANSFER_LOCK_PREFIX = "transfer:lock:";
+    String TRANSFER_CACHE_PREFIX = "transfer:";
+
+    String BATCH_TRANSFER_IDEMPOTENT_PREFIX = "batch_transfer:idempotent:";
+    String BATCH_TRANSFER_LOCK_PREFIX = "batch_transfer:lock:";
+    String BATCH_TRANSFER_CACHE_PREFIX = "batch_transfer:";
+
+    String ROCKETMQ_TAG_PAYMENT_RECHARGE = "payment:recharge";
+    String ROCKETMQ_TAG_PAYMENT_WITHDRAW = "payment:withdraw";
+    String ROCKETMQ_TAG_TRANSFER = "transfer";
+    String ROCKETMQ_TAG_BATCH_TRANSFER = "batch_transfer";
+    String ROCKETMQ_TAG_CHANNEL_CALLBACK = "channel:callback";
+
     Integer MAX_RETRY_TIMES = 3;
+
+    Integer MAX_BATCH_TRANSFER_SIZE = 1000;
 
     String SEATA_TX_GROUP = "account-tx-group";
 

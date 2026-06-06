@@ -31,7 +31,23 @@ public enum ResultCodeEnum {
     INVALID_DIRECTION(3003, "无效的借贷方向"),
     INVALID_TRANSACTION_TYPE(3004, "无效的交易类型"),
     CONCURRENT_UPDATE_FAILED(3005, "并发更新失败，请重试"),
-    INSUFFICIENT_ENTRY(3006, "至少需要两条分录");
+    INSUFFICIENT_ENTRY(3006, "至少需要两条分录"),
+
+    PAYMENT_ORDER_NOT_EXIST(4001, "支付订单不存在"),
+    INVALID_PAYMENT_TYPE(4002, "无效的支付类型"),
+    INVALID_PAYMENT_STATUS(4003, "无效的支付状态"),
+    PAYMENT_ORDER_ALREADY_PROCESSED(4004, "支付订单已处理"),
+    CHANNEL_NOT_SUPPORTED(4005, "不支持的渠道"),
+    INVALID_CHANNEL_STATUS(4006, "无效的渠道状态"),
+
+    TRANSFER_ORDER_NOT_EXIST(5001, "转账订单不存在"),
+    TRANSFER_SAME_ACCOUNT(5002, "转账方和收款方不能相同"),
+    TRANSFER_CURRENCY_MISMATCH(5003, "转账币种不匹配"),
+
+    BATCH_TRANSFER_EMPTY(6001, "批量转账明细不能为空"),
+    BATCH_TRANSFER_TOO_MANY_ITEMS(6002, "批量转账明细超过最大条数"),
+    BATCH_TRANSFER_ORDER_NOT_EXIST(6003, "批量转账订单不存在"),
+    BATCH_TRANSFER_ITEM_NOT_EXIST(6004, "批量转账明细不存在");
 
     private final Integer code;
     private final String message;

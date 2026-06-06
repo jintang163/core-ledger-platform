@@ -41,4 +41,20 @@ public class SnowflakeIdGenerator {
     public static String generateEntryId() {
         return "ENTRY" + SNOWFLAKE.nextIdStr();
     }
+
+    public static String generatePaymentNo() {
+        return "PAY" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+    }
+
+    public static String generateTransferNo() {
+        return "TRF" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+    }
+
+    public static String generateBatchNo() {
+        return "BAT" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+    }
+
+    public static String generateBatchItemId() {
+        return "ITEM" + SNOWFLAKE.nextIdStr();
+    }
 }
