@@ -39,6 +39,8 @@
         <fastjson.version>1.2.83</fastjson.version>
         <commons-lang3.version>3.12.0</commons-lang3.version>
         <validation.version>2.0.1.Final</validation.version>
+        <knife4j.version>3.0.3</knife4j.version>
+        <swagger.version>1.6.2</swagger.version>
     </properties>
 
     <dependencyManagement>
@@ -138,6 +140,24 @@
                 <groupId>javax.validation</groupId>
                 <artifactId>validation-api</artifactId>
                 <version>${validation.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>com.github.xiaoymin</groupId>
+                <artifactId>knife4j-spring-boot-starter</artifactId>
+                <version>${knife4j.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.springfox</groupId>
+                <artifactId>springfox-swagger2</artifactId>
+                <version>${swagger.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>io.springfox</groupId>
+                <artifactId>springfox-swagger-ui</artifactId>
+                <version>${swagger.version}</version>
             </dependency>
 
             <dependency>

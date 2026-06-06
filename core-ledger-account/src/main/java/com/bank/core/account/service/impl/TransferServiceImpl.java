@@ -37,6 +37,21 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+/**
+ * 转账服务实现类
+ * 处理账户间转账业务，保证扣款方与收款方的原子操作
+ *
+ * 核心业务逻辑：
+ * 1. 账户间转账：内部账户A → 内部账户B
+ * 2. 保证原子性：使用Seata全局事务，要么全部成功，要么全部失败
+ * 3. 支持备注功能
+ *
+ * 技术要点：
+ * - 全链路幂等性校验（Redis + DB + 分布式锁）
+ * - Seata全局事务保证跨账户操作的原子性
+ * - 借贷记账法：借记收款人账户，贷记付款人账户
+ * - 分布式锁防止并发操作
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -48,6 +63,26 @@ public class TransferServiceImpl implements TransferService {
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
 
+    /**
+     * 账户间转账
+     * 资金流向：内部账户A（扣款方） → 内部账户B（收款方）
+     *
+     * 业务流程：
+     * 1. 幂等性校验（Redis + DB + 分布式锁三层校验）
+     * 2. 参数校验（币种、金额、账户状态、余额充足）
+     * 3. 校验转账双方不是同一账户、币种一致
+     * 4. 分布式锁保证并发安全
+     * 5. 创建转账订单（状态：待处理）
+     * 6. 创建会计交易（借记收款人账户，贷记付款人账户）
+     * 7. 更新订单状态为成功
+     * 8. 发送转账事件到MQ
+     * 9. 清除账户缓存
+     *
+     * 注意：使用Seata全局事务保证跨账户操作的原子性
+     *
+     * @param dto 转账请求DTO
+     * @return 转账订单VO
+     */
     @Override
     @Transactional(rollbackFor = Exception.class)
     public TransferOrderVO transfer(TransferDTO dto) {
@@ -134,6 +169,12 @@ public class TransferServiceImpl implements TransferService {
         });
     }
 
+    /**
+     * 根据转账ID查询转账订单
+     * 先查缓存，缓存不存在再查数据库，查询结果写入缓存
+     * @param transferId 转账订单ID
+     * @return 转账订单VO
+     */
     @Override
     public TransferOrderVO getTransferOrder(String transferId) {
         log.debug("查询转账订单, transferId: {}", transferId);
@@ -158,6 +199,11 @@ public class TransferServiceImpl implements TransferService {
         return vo;
     }
 
+    /**
+     * 根据业务流水号查询转账订单
+     * @param businessNo 业务流水号
+     * @return 转账订单VO
+     */
     @Override
     public TransferOrderVO getTransferOrderByBusinessNo(String businessNo) {
         log.debug("根据业务流水号查询转账订单, businessNo: {}", businessNo);
@@ -170,11 +216,18 @@ public class TransferServiceImpl implements TransferService {
         return convertToVO(order);
     }
 
+    /**
+     * 分页查询转账订单列表
+     * 支持按转出账户、转入账户、状态、时间范围筛选
+     * @param dto 查询条件DTO
+     * @return 分页结果
+     */
     @Override
     public Page<TransferOrderVO> queryTransferOrders(TransferQueryDTO dto) {
         log.info("查询转账订单列表, fromAccountId: {}, toAccountId: {}, status: {}",
                 dto.getFromAccountId(), dto.getToAccountId(), dto.getStatus());
 
+        // 参数校验：页码最小为1，每页最大条数限制
         int pageNum = Math.max(dto.getPageNum(), 1);
         int pageSize = Math.min(dto.getPageSize(), CommonConstants.MAX_PAGE_SIZE);
 
@@ -188,6 +241,7 @@ public class TransferServiceImpl implements TransferService {
                 dto.getEndTime()
         );
 
+        // 转换为VO
         Page<TransferOrderVO> voPage = new Page<>(pageNum, pageSize, resultPage.getTotal());
         List<TransferOrderVO> voList = resultPage.getRecords().stream()
                 .map(this::convertToVO)
@@ -197,13 +251,26 @@ public class TransferServiceImpl implements TransferService {
         return voPage;
     }
 
+    /**
+     * 校验转账参数
+     * @param dto 转账请求DTO
+     */
     private void validateTransferParam(TransferDTO dto) {
+        // 校验币种
         if (CurrencyEnum.getByCode(dto.getCurrency()) == null) {
             throw new BusinessException(ResultCodeEnum.CURRENCY_NOT_SUPPORTED);
         }
+        // 校验金额
         AmountUtil.validateAmount(dto.getAmount());
     }
 
+    /**
+     * 校验账户状态
+     * 检查账户是否存在、是否关闭、是否冻结、币种是否匹配
+     * @param accountId 账户ID
+     * @param currency 币种
+     * @return 账户实体
+     */
     private Account validateAccount(String accountId, String currency) {
         Account account = accountMapper.selectByAccountId(accountId);
         if (account == null) {
@@ -222,6 +289,11 @@ public class TransferServiceImpl implements TransferService {
         return account;
     }
 
+    /**
+     * 校验账户余额是否充足
+     * @param account 账户实体
+     * @param amount 金额（元）
+     */
     private void validateSufficientBalance(Account account, BigDecimal amount) {
         long amountFen = AmountUtil.yuanToFen(amount);
         if (account.getBalance() < amountFen) {
@@ -232,6 +304,15 @@ public class TransferServiceImpl implements TransferService {
         }
     }
 
+    /**
+     * 构建转账订单实体
+     * @param dto 转账请求DTO
+     * @param transferId 转账订单ID
+     * @param transferNo 转账单号
+     * @param fromAccount 扣款方账户
+     * @param toAccount 收款方账户
+     * @return 转账订单实体
+     */
     private TransferOrder buildTransferOrder(TransferDTO dto, String transferId, String transferNo,
                                               Account fromAccount, Account toAccount) {
         TransferOrder order = new TransferOrder();
@@ -255,6 +336,22 @@ public class TransferServiceImpl implements TransferService {
         return order;
     }
 
+    /**
+     * 创建转账会计交易
+     * 资金流向：内部账户A（扣款方） → 内部账户B（收款方）
+     * 会计分录：
+     *   借：银行存款（收款方账户）  金额
+     *   贷：银行存款（扣款方账户）  金额
+     *
+     * 说明：借记收款人账户表示余额增加，贷记付款人账户表示余额减少
+     * 两个分录均使用"银行存款"科目，因为都是内部账户的资金变动
+     *
+     * @param dto 转账请求DTO
+     * @param fromAccount 扣款方账户
+     * @param toAccount 收款方账户
+     * @param transferId 转账订单ID
+     * @return 交易ID
+     */
     private String createTransferTransaction(TransferDTO dto, Account fromAccount, Account toAccount, String transferId) {
         TransactionCreateDTO txDTO = new TransactionCreateDTO();
         txDTO.setRequestId(dto.getRequestId());
@@ -266,22 +363,25 @@ public class TransferServiceImpl implements TransferService {
         txDTO.setOperator(dto.getOperator());
 
         List<TransactionEntryDTO> entries = new ArrayList<>();
+
+        // 借方分录：收款方账户 - 银行存款增加
         TransactionEntryDTO debitEntry = new TransactionEntryDTO();
         debitEntry.setAccountId(toAccount.getAccountId());
         debitEntry.setSubjectCode("1001");
         debitEntry.setSubjectName("银行存款");
         debitEntry.setDirection(DebitCreditEnum.DEBIT.getCode());
         debitEntry.setAmount(dto.getAmount());
-        debitEntry.setSummary("转账入账");
+        debitEntry.setSummary("转账入账-收款方");
         entries.add(debitEntry);
 
+        // 贷方分录：扣款方账户 - 银行存款减少
         TransactionEntryDTO creditEntry = new TransactionEntryDTO();
         creditEntry.setAccountId(fromAccount.getAccountId());
         creditEntry.setSubjectCode("1001");
         creditEntry.setSubjectName("银行存款");
         creditEntry.setDirection(DebitCreditEnum.CREDIT.getCode());
         creditEntry.setAmount(dto.getAmount());
-        creditEntry.setSummary("转账出账");
+        creditEntry.setSummary("转账出账-付款方");
         entries.add(creditEntry);
 
         txDTO.setEntries(entries);
@@ -292,6 +392,11 @@ public class TransferServiceImpl implements TransferService {
         return result.getTransactionId();
     }
 
+    /**
+     * 将转账订单实体转换为VO
+     * @param order 转账订单实体
+     * @return 转账订单VO
+     */
     private TransferOrderVO convertToVO(TransferOrder order) {
         TransferOrderVO vo = new TransferOrderVO();
         BeanUtils.copyProperties(order, vo);
@@ -304,6 +409,11 @@ public class TransferServiceImpl implements TransferService {
         return vo;
     }
 
+    /**
+     * 发送转账事件到RocketMQ
+     * 用于通知其他业务系统转账完成
+     * @param vo 转账订单VO
+     */
     private void sendTransferEvent(TransferOrderVO vo) {
         try {
             AccountEvent event = new AccountEvent();
@@ -328,6 +438,10 @@ public class TransferServiceImpl implements TransferService {
         }
     }
 
+    /**
+     * 删除账户缓存
+     * @param accountId 账户ID
+     */
     private void deleteAccountCache(String accountId) {
         String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();
