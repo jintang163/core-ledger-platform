@@ -53,31 +53,45 @@ public class HotAccountServiceImpl implements HotAccountService {
     private final AccountShardMapper accountShardMapper;
     private final RedissonClient redissonClient;
 
-    /** 轮询计数器 */
+    /**
+     * 轮询计数器
+     * 用于轮询路由策略，记录当前轮询位置
+     * 使用AtomicInteger保证线程安全
+     */
     private final AtomicInteger roundRobinCounter = new AtomicInteger(0);
 
-    /** 随机数生成器 */
+    /**
+     * 随机数生成器
+     * 用于随机路由策略
+     * 使用SecureRandom提供更高的随机性和安全性
+     */
     private final SecureRandom secureRandom = new SecureRandom();
 
     @Override
     public boolean isHotAccount(String accountId) {
+        // 构造缓存key，优先从缓存获取结果，减少数据库查询
         String cacheKey = CommonConstants.HOT_ACCOUNT_LOCK_PREFIX + accountId;
         RBucket<String> cacheBucket = redissonClient.getBucket(cacheKey);
         String cached = cacheBucket.get();
         if (cached != null) {
+            // 缓存命中，直接判断是否为热点状态（2-已分片 或 3-已启用缓冲）
             return HotAccountStatusEnum.HOT_SHARDING.getCode().toString().equals(cached)
                     || HotAccountStatusEnum.HOT_BUFFER.getCode().toString().equals(cached);
         }
 
+        // 缓存未命中，查询数据库
         Account account = accountMapper.selectByAccountId(accountId);
         if (account == null) {
             return false;
         }
 
+        // 判断账户是否为热点账户（状态为已分片或已启用缓冲）
         Integer hotStatus = account.getHotStatus();
         boolean isHot = HotAccountStatusEnum.HOT_SHARDING.getCode().equals(hotStatus)
                 || HotAccountStatusEnum.HOT_BUFFER.getCode().equals(hotStatus);
 
+        // 写入缓存，有效期5分钟，减少频繁查询
+        // 注意：缓存值存实际状态码，普通账户存"0"
         cacheBucket.set(isHot ? hotStatus.toString() : "0", 5, TimeUnit.MINUTES);
         return isHot;
     }
@@ -87,11 +101,13 @@ public class HotAccountServiceImpl implements HotAccountService {
     public List<AccountShard> createShards(String mainAccountId, Integer shardCount, Integer shardingStrategy) {
         log.info("创建热点账户分片, mainAccountId: {}, shardCount: {}", mainAccountId, shardCount);
 
+        // 校验主账户是否存在
         Account mainAccount = accountMapper.selectByAccountId(mainAccountId);
         if (mainAccount == null) {
             throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
         }
 
+        // 分片数量参数校验，确保在合理范围内
         if (shardCount == null) {
             shardCount = CommonConstants.DEFAULT_SHARD_COUNT;
         }
@@ -102,18 +118,23 @@ public class HotAccountServiceImpl implements HotAccountService {
             shardCount = CommonConstants.MAX_SHARD_COUNT;
         }
 
+        // 分片策略默认使用随机路由
         if (shardingStrategy == null) {
             shardingStrategy = ShardingStrategyEnum.RANDOM.getCode();
         }
 
+        // 循环创建分片
+        // 分片ID规则：主账户ID + 后缀 + 两位序号（如 ACC1001_SHARD_01）
         for (int i = 0; i < shardCount; i++) {
             String shardId = mainAccountId + CommonConstants.SHARD_ID_SUFFIX + String.format("%02d", i);
 
+            // 幂等处理：分片已存在则跳过，避免重复创建
             AccountShard existing = accountShardMapper.selectByShardId(shardId);
             if (existing != null) {
                 continue;
             }
 
+            // 创建影子账户，与主账户同币种
             AccountShard shard = new AccountShard();
             shard.setId(SnowflakeIdGenerator.nextId());
             shard.setShardId(shardId);
@@ -131,12 +152,14 @@ public class HotAccountServiceImpl implements HotAccountService {
             accountShardMapper.insert(shard);
         }
 
+        // 更新主账户状态为"已分片热点"，记录分片数量和策略
         mainAccount.setHotStatus(HotAccountStatusEnum.HOT_SHARDING.getCode());
         mainAccount.setShardCount(shardCount);
         mainAccount.setShardingStrategy(shardingStrategy);
         mainAccount.setUpdateTime(LocalDateTime.now());
         accountMapper.updateById(mainAccount);
 
+        // 删除缓存，确保下次查询获取最新状态
         String cacheKey = CommonConstants.HOT_ACCOUNT_LOCK_PREFIX + mainAccountId;
         redissonClient.getBucket(cacheKey).delete();
 
@@ -146,26 +169,33 @@ public class HotAccountServiceImpl implements HotAccountService {
 
     @Override
     public AccountShard routeShard(String mainAccountId) {
+        // 优先从缓存获取活跃分片列表，减少数据库查询
         List<AccountShard> shards = getActiveShardsFromCache(mainAccountId);
         if (shards == null || shards.isEmpty()) {
+            // 缓存未命中，查询数据库
             shards = accountShardMapper.selectActiveShards(mainAccountId);
             if (shards.isEmpty()) {
                 throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST, "热点账户没有可用分片: " + mainAccountId);
             }
+            // 写入缓存，有效期10分钟
             String cacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + mainAccountId;
             redissonClient.getBucket(cacheKey).set(JSON.toJSONString(shards), 10, TimeUnit.MINUTES);
         }
 
+        // 查询主账户获取分片策略
         Account mainAccount = accountMapper.selectByAccountId(mainAccountId);
         if (mainAccount == null || mainAccount.getShardingStrategy() == null) {
+            // 未配置策略，默认使用随机路由
             return selectRandomShard(shards);
         }
 
+        // 根据配置的策略选择分片
         ShardingStrategyEnum strategy = ShardingStrategyEnum.getByCode(mainAccount.getShardingStrategy());
         if (strategy == null) {
             strategy = ShardingStrategyEnum.RANDOM;
         }
 
+        // 根据策略路由到不同的分片选择算法
         return switch (strategy) {
             case ROUND_ROBIN -> selectRoundRobinShard(shards);
             case HASH -> selectHashShard(shards, Thread.currentThread().getName());
@@ -178,12 +208,17 @@ public class HotAccountServiceImpl implements HotAccountService {
         log.debug("更新影子账户余额, shardId: {}, amount: {}分", shardId, amountFen);
 
         try {
+            // 使用重试工具处理乐观锁并发冲突
+            // 重试机制：默认重试3次，每次间隔递增
             RetryUtil.executeWithRetry(() -> {
+                // 每次重试都需要重新查询最新的分片信息和版本号
                 AccountShard shard = accountShardMapper.selectByShardId(shardId);
                 if (shard == null) {
                     throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST, "影子账户不存在: " + shardId);
                 }
 
+                // 带版本号更新余额，防止并发冲突
+                // 如果版本号不匹配，返回0，触发重试
                 int updated = accountShardMapper.updateBalanceWithVersion(
                         shardId, amountFen, shard.getVersion(), LocalDateTime.now());
 
@@ -194,6 +229,7 @@ public class HotAccountServiceImpl implements HotAccountService {
             });
             return true;
         } catch (Exception e) {
+            // 重试全部失败，记录错误日志
             log.error("更新影子账户余额失败, shardId: {}", shardId, e);
             return false;
         }
@@ -204,26 +240,35 @@ public class HotAccountServiceImpl implements HotAccountService {
     public Long mergeShards(String mainAccountId) {
         log.info("归并影子账户余额, mainAccountId: {}", mainAccountId);
 
+        // 使用分布式锁防止同一账户并发归并
         String lockKey = CommonConstants.SHARD_MERGE_LOCK_PREFIX + mainAccountId;
         return DistributedLockUtil.executeWithLock(lockKey, () -> {
+            // 校验主账户是否存在
             Account mainAccount = accountMapper.selectByAccountId(mainAccountId);
             if (mainAccount == null) {
                 throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
             }
 
+            // 查询所有活跃的影子账户
             List<AccountShard> shards = accountShardMapper.selectActiveShards(mainAccountId);
             long totalAmount = 0L;
 
+            // 逐个归并每个影子账户的余额
             for (AccountShard shard : shards) {
+                // 余额为0的分片跳过，提高效率
                 if (shard.getBalance() == null || shard.getBalance() == 0L) {
                     continue;
                 }
 
+                // 累加归并总金额
                 totalAmount += shard.getBalance();
 
+                // 先更新归并状态为"归并中"，防止重复处理
                 accountShardMapper.updateMergeStatus(shard.getShardId(), 1, LocalDateTime.now());
 
+                // 使用乐观锁+重试机制更新主账户余额
                 RetryUtil.executeWithRetry(() -> {
+                    // 每次重试都需要重新查询最新的主账户信息和版本号
                     Account freshAccount = accountMapper.selectByAccountId(mainAccountId);
                     int updated = accountMapper.updateBalanceWithVersion(
                             mainAccountId, shard.getBalance(),
@@ -234,9 +279,11 @@ public class HotAccountServiceImpl implements HotAccountService {
                     return null;
                 });
 
+                // 归并成功后重置影子账户余额为0，更新归并状态和时间
                 accountShardMapper.resetBalanceAfterMerge(shard.getShardId(), LocalDateTime.now(), LocalDateTime.now());
             }
 
+            // 清除分片缓存，确保下次路由获取最新状态
             String cacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + mainAccountId;
             redissonClient.getBucket(cacheKey).delete();
 
@@ -250,8 +297,11 @@ public class HotAccountServiceImpl implements HotAccountService {
     public void mergeAllShards() {
         log.info("开始定时归并所有热点账户影子分片");
 
+        // 使用全局分布式锁防止多实例同时执行归并任务
+        // 锁持有时间1小时，防止任务执行时间过长
         String lockKey = "hot:account:merge:all:lock";
         DistributedLockUtil.executeWithLock(lockKey, 1L, 3600L, () -> {
+            // 查询所有热点账户（状态为2-已分片 或 3-已启用缓冲）
             List<Account> hotAccounts = accountMapper.selectAllHotAccounts();
             if (hotAccounts.isEmpty()) {
                 log.info("没有需要归并的热点账户");
@@ -260,10 +310,13 @@ public class HotAccountServiceImpl implements HotAccountService {
 
             log.info("找到{}个热点账户需要归并", hotAccounts.size());
 
+            // 统计归并结果
             int successCount = 0;
             int failCount = 0;
             long totalMergedAmount = 0L;
 
+            // 逐个归并每个热点账户
+            // 注意：单个账户归并失败不影响其他账户
             for (Account account : hotAccounts) {
                 try {
                     Long mergedAmount = mergeShards(account.getAccountId());
@@ -286,13 +339,16 @@ public class HotAccountServiceImpl implements HotAccountService {
 
     @Override
     public Long getTotalAvailableBalance(String mainAccountId) {
+        // 查询主账户信息
         Account mainAccount = accountMapper.selectByAccountId(mainAccountId);
         if (mainAccount == null) {
             return 0L;
         }
 
+        // 初始化为主账户余额
         long total = mainAccount.getBalance() != null ? mainAccount.getBalance() : 0L;
 
+        // 如果是热点账户，需要累加所有影子账户的余额
         if (isHotAccount(mainAccountId)) {
             List<AccountShard> shards = accountShardMapper.selectActiveShards(mainAccountId);
             for (AccountShard shard : shards) {
@@ -307,6 +363,7 @@ public class HotAccountServiceImpl implements HotAccountService {
 
     @Override
     public List<AccountShard> getShards(String mainAccountId) {
+        // 查询主账户的所有影子账户（包含已关闭的）
         return accountShardMapper.selectByMainAccountId(mainAccountId);
     }
 
@@ -315,15 +372,18 @@ public class HotAccountServiceImpl implements HotAccountService {
     public void markAsHotAccount(String accountId, Integer shardCount) {
         log.info("标记账户为热点账户, accountId: {}, shardCount: {}", accountId, shardCount);
 
+        // 校验账户是否存在
         Account account = accountMapper.selectByAccountId(accountId);
         if (account == null) {
             throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
         }
 
+        // 只有正常状态的账户才能标记为热点账户
         if (!AccountStatusEnum.NORMAL.getCode().equals(account.getStatus())) {
             throw new BusinessException(ResultCodeEnum.ACCOUNT_STATUS_ERROR, "账户状态异常");
         }
 
+        // 创建影子账户分片，默认使用随机路由策略
         createShards(accountId, shardCount, ShardingStrategyEnum.RANDOM.getCode());
     }
 
@@ -332,8 +392,10 @@ public class HotAccountServiceImpl implements HotAccountService {
     public void unmarkAsHotAccount(String accountId) {
         log.info("取消热点账户标记, accountId: {}", accountId);
 
+        // 第一步：先归并所有影子账户的余额到主账户
         mergeShards(accountId);
 
+        // 第二步：更新主账户状态为普通账户
         Account account = accountMapper.selectByAccountId(accountId);
         if (account != null) {
             account.setHotStatus(HotAccountStatusEnum.NORMAL.getCode());
@@ -341,6 +403,7 @@ public class HotAccountServiceImpl implements HotAccountService {
             accountMapper.updateById(account);
         }
 
+        // 第三步：关闭所有影子账户（状态置为1）
         List<AccountShard> shards = accountShardMapper.selectByMainAccountId(accountId);
         for (AccountShard shard : shards) {
             shard.setStatus(1);
@@ -348,6 +411,7 @@ public class HotAccountServiceImpl implements HotAccountService {
             accountShardMapper.updateById(shard);
         }
 
+        // 第四步：清除相关缓存，确保下次查询获取最新状态
         String cacheKey = CommonConstants.HOT_ACCOUNT_LOCK_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();
         cacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + accountId;
@@ -356,6 +420,13 @@ public class HotAccountServiceImpl implements HotAccountService {
         log.info("热点账户标记取消完成, accountId: {}", accountId);
     }
 
+    /**
+     * 从缓存获取活跃分片列表
+     * 使用FastJSON反序列化缓存的JSON字符串
+     *
+     * @param mainAccountId 主账户ID
+     * @return 活跃分片列表，缓存未命中返回null
+     */
     @SuppressWarnings("unchecked")
     private List<AccountShard> getActiveShardsFromCache(String mainAccountId) {
         String cacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + mainAccountId;
@@ -367,13 +438,32 @@ public class HotAccountServiceImpl implements HotAccountService {
         return null;
     }
 
+    /**
+     * 随机路由策略
+     * 使用SecureRandom生成随机索引，选择分片
+     * 优点：实现简单，分布均匀
+     * 缺点：无法保证同一请求路由到同一分片
+     *
+     * @param shards 活跃分片列表
+     * @return 选中的分片
+     */
     private AccountShard selectRandomShard(List<AccountShard> shards) {
         int index = secureRandom.nextInt(shards.size());
         return shards.get(index);
     }
 
+    /**
+     * 轮询路由策略
+     * 使用AtomicInteger保证原子性递增，按顺序轮询选择分片
+     * 优点：请求分布绝对均匀
+     * 缺点：多实例部署时轮询计数器不同步，可能不均匀
+     *
+     * @param shards 活跃分片列表
+     * @return 选中的分片
+     */
     private AccountShard selectRoundRobinShard(List<AccountShard> shards) {
         int index = roundRobinCounter.getAndIncrement() % shards.size();
+        // 防止计数器溢出变为负数，重置为0
         if (index < 0) {
             index = 0;
             roundRobinCounter.set(0);
@@ -381,7 +471,18 @@ public class HotAccountServiceImpl implements HotAccountService {
         return shards.get(index);
     }
 
+    /**
+     * 哈希路由策略
+     * 根据key的哈希值选择分片，保证同一key始终路由到同一分片
+     * 优点：同一请求/线程始终路由到同一分片，便于追踪
+     * 缺点：如果某些分片特别热门，可能导致负载不均
+     *
+     * @param shards 活跃分片列表
+     * @param key 哈希键值（如线程名、用户ID等）
+     * @return 选中的分片
+     */
     private AccountShard selectHashShard(List<AccountShard> shards, String key) {
+        // 使用Math.abs确保哈希值为正数
         int hash = Math.abs(key.hashCode());
         int index = hash % shards.size();
         return shards.get(index);
