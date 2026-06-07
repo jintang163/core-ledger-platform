@@ -17,6 +17,12 @@ public class AccountFreezeDTO implements Serializable {
     @NotNull(message = "冻结类型不能为空")
     private Integer freezeType;
 
+    private java.math.BigDecimal amount;
+
+    private String currency;
+
+    private String businessNo;
+
     private String remark;
 
     private String operator;

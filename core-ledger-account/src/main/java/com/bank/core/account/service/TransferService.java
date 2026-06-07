@@ -14,4 +14,6 @@ public interface TransferService {
     TransferOrderVO getTransferOrderByBusinessNo(String businessNo);
 
     Page<TransferOrderVO> queryTransferOrders(TransferQueryDTO dto);
+
+    TransferOrderVO crossBankTransfer(TransferDTO dto);
 }

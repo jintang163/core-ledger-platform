@@ -64,6 +64,7 @@ public class TransferServiceImpl implements TransferService {
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
     private final PrometheusConfig prometheusConfig;
+    private final com.bank.core.account.service.DistributedTransactionService distributedTransactionService;
 
     /**
      * 账户间转账
@@ -468,6 +469,33 @@ public class TransferServiceImpl implements TransferService {
      * 删除账户缓存
      * @param accountId 账户ID
      */
+    @Override
+    public TransferOrderVO crossBankTransfer(TransferDTO dto) {
+        log.info("开始跨行转账, businessNo={}, from={}, to={}, channel={}, amount={}",
+                dto.getBusinessNo(), dto.getFromAccountId(), dto.getToAccountId(),
+                dto.getChannelCode(), dto.getAmount());
+
+        String sagaId = distributedTransactionService.executeCrossBankTransferWithSaga(dto);
+
+        TransferOrder order = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+        if (order == null) {
+            order = new TransferOrder();
+            order.setTransferId("CROSS_" + sagaId);
+            order.setBusinessNo(dto.getBusinessNo());
+            order.setFromAccountId(dto.getFromAccountId());
+            order.setToAccountId(dto.getToAccountId());
+            order.setAmount(dto.getAmount());
+            order.setCurrency(dto.getCurrency());
+            order.setStatus(PaymentStatusEnum.SUCCESS.getCode());
+        }
+
+        TransferOrderVO vo = convertToVO(order);
+        vo.setRemark("跨行转账处理中，Saga事务ID: " + sagaId);
+
+        log.info("跨行转账提交完成, sagaId={}, businessNo={}", sagaId, dto.getBusinessNo());
+        return vo;
+    }
+
     private void deleteAccountCache(String accountId) {
         String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();

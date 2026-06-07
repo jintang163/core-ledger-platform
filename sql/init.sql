@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS t_account (
     account_type TINYINT NOT NULL COMMENT '账户类型：1-个人，2-企业',
     currency VARCHAR(8) NOT NULL COMMENT '币种',
     balance BIGINT NOT NULL DEFAULT 0 COMMENT '余额（分）',
+    freeze_balance BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额（分），TCC模式中Try阶段预留的资金',
     status TINYINT NOT NULL DEFAULT 1 COMMENT '状态：1-正常，2-冻结，3-已销户',
     freeze_type TINYINT DEFAULT NULL COMMENT '冻结类型：1-司法冻结，2-风控冻结',
     freeze_remark VARCHAR(255) DEFAULT NULL COMMENT '冻结备注',
@@ -47,6 +48,7 @@ CREATE TABLE IF NOT EXISTS t_account (
 
 -- 兼容已存在表的情况，添加缺失字段
 ALTER TABLE t_account 
+    ADD COLUMN IF NOT EXISTS freeze_balance BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额（分），TCC模式中Try阶段预留的资金' AFTER balance,
     ADD COLUMN IF NOT EXISTS hot_status TINYINT NOT NULL DEFAULT 0 COMMENT '热点账户状态：0-普通账户，1-待标记热点，2-已分片热点，3-已启用缓冲记账' AFTER version,
     ADD COLUMN IF NOT EXISTS shard_count INT DEFAULT NULL COMMENT '影子账户分片数量（热点账户专用）' AFTER hot_status,
     ADD COLUMN IF NOT EXISTS sharding_strategy TINYINT DEFAULT NULL COMMENT '分片策略：1-随机路由，2-轮询路由，3-哈希路由' AFTER shard_count,
@@ -378,6 +380,100 @@ CREATE TABLE IF NOT EXISTS undo_log (
     KEY ix_log_created (log_created)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Seata AT模式回滚日志表';
 
+-- -----------------------------------------------------
+-- Saga事务日志表 t_saga_transaction_log
+-- 用于记录Saga分布式事务的执行日志，支持补偿和重试
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    saga_id VARCHAR(64) NOT NULL COMMENT 'Saga事务ID',
+    saga_name VARCHAR(128) DEFAULT NULL COMMENT 'Saga事务名称',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '业务流水号',
+    transaction_type TINYINT DEFAULT NULL COMMENT '事务类型：1-TCC 2-SAGA',
+    status TINYINT DEFAULT NULL COMMENT '事务状态：0-PENDING 1-SUCCESS 2-FAILED',
+    step_id VARCHAR(64) DEFAULT NULL COMMENT '步骤ID',
+    step_name VARCHAR(128) DEFAULT NULL COMMENT '步骤名称',
+    phase TINYINT DEFAULT NULL COMMENT '事务阶段：1-TRY 2-CONFIRM 3-CANCEL 4-FORWARD 5-COMPENSATE',
+    step_status TINYINT DEFAULT NULL COMMENT '步骤状态：0-PENDING 1-FORWARD_SUCCESS 2-FORWARD_FAILED 3-COMPENSATE_SUCCESS 4-COMPENSATE_FAILED 5-SKIPPED',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    params TEXT DEFAULT NULL COMMENT '参数JSON',
+    error_message VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    execute_time DATETIME DEFAULT NULL COMMENT '执行时间',
+    complete_time DATETIME DEFAULT NULL COMMENT '完成时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    KEY idx_saga_id (saga_id),
+    KEY idx_step_status (step_status),
+    KEY idx_retry_count (retry_count),
+    KEY idx_create_time (create_time),
+    KEY idx_business_no (business_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Saga事务日志表';
+
+-- -----------------------------------------------------
+-- Saga事务日志表 t_saga_transaction_log
+-- 用于记录Saga分布式事务的执行日志，支持补偿和重试
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    log_id VARCHAR(64) NOT NULL COMMENT '日志ID',
+    saga_id VARCHAR(64) NOT NULL COMMENT 'Saga事务ID',
+    step_id VARCHAR(64) NOT NULL COMMENT '步骤ID',
+    step_name VARCHAR(128) DEFAULT NULL COMMENT '步骤名称',
+    step_order INT NOT NULL COMMENT '步骤顺序',
+    service_name VARCHAR(64) DEFAULT NULL COMMENT '服务名称',
+    forward_method VARCHAR(64) DEFAULT NULL COMMENT '正向操作方法名',
+    compensate_method VARCHAR(64) DEFAULT NULL COMMENT '补偿操作方法名',
+    transaction_phase TINYINT NOT NULL COMMENT '事务阶段：1-TRY 2-CONFIRM 3-CANCEL 4-FORWARD 5-COMPENSATE',
+    step_status TINYINT NOT NULL COMMENT '步骤状态：0-PENDING 1-FORWARD_SUCCESS 2-FORWARD_FAILED 3-COMPENSATE_SUCCESS 4-COMPENSATE_FAILED 5-SKIPPED',
+    params TEXT DEFAULT NULL COMMENT '参数JSON',
+    result TEXT DEFAULT NULL COMMENT '执行结果JSON',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    execute_time DATETIME DEFAULT NULL COMMENT '执行时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_log_id (log_id),
+    KEY idx_saga_id (saga_id),
+    KEY idx_step_status (step_status),
+    KEY idx_retry_count (retry_count),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Seata AT模式回滚日志表';
+
+-- -----------------------------------------------------
+-- Saga事务日志表 t_saga_transaction_log
+-- 用于记录Saga分布式事务的执行日志，支持补偿和重试
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    saga_id VARCHAR(64) NOT NULL COMMENT 'Saga事务ID',
+    saga_name VARCHAR(128) DEFAULT NULL COMMENT 'Saga事务名称',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '业务流水号',
+    transaction_type TINYINT DEFAULT NULL COMMENT '事务类型：1-TCC 2-SAGA',
+    status TINYINT DEFAULT NULL COMMENT '事务状态：0-PENDING 1-SUCCESS 2-FAILED',
+    step_id VARCHAR(64) DEFAULT NULL COMMENT '步骤ID',
+    step_name VARCHAR(128) DEFAULT NULL COMMENT '步骤名称',
+    phase TINYINT DEFAULT NULL COMMENT '事务阶段：1-TRY 2-CONFIRM 3-CANCEL 4-FORWARD 5-COMPENSATE',
+    step_status TINYINT DEFAULT NULL COMMENT '步骤状态：0-PENDING 1-FORWARD_SUCCESS 2-FORWARD_FAILED 3-COMPENSATE_SUCCESS 4-COMPENSATE_FAILED 5-SKIPPED',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    params TEXT DEFAULT NULL COMMENT '参数JSON',
+    error_message VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    execute_time DATETIME DEFAULT NULL COMMENT '执行时间',
+    complete_time DATETIME DEFAULT NULL COMMENT '完成时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    KEY idx_saga_id (saga_id),
+    KEY idx_step_status (step_status),
+    KEY idx_retry_count (retry_count),
+    KEY idx_create_time (create_time),
+    KEY idx_business_no (business_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Saga事务日志表';
+
 -- =====================================================
 -- 数据库：core_ledger_1
 -- =====================================================
@@ -394,6 +490,7 @@ CREATE TABLE IF NOT EXISTS t_account (
     account_type TINYINT NOT NULL COMMENT '账户类型：1-个人，2-企业',
     currency VARCHAR(8) NOT NULL COMMENT '币种',
     balance BIGINT NOT NULL DEFAULT 0 COMMENT '余额（分）',
+    freeze_balance BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额（分），TCC模式中Try阶段预留的资金',
     status TINYINT NOT NULL DEFAULT 1 COMMENT '状态：1-正常，2-冻结，3-已销户',
     freeze_type TINYINT DEFAULT NULL COMMENT '冻结类型：1-司法冻结，2-风控冻结',
     freeze_remark VARCHAR(255) DEFAULT NULL COMMENT '冻结备注',
@@ -418,6 +515,7 @@ CREATE TABLE IF NOT EXISTS t_account (
 
 -- 兼容已存在表的情况，添加缺失字段
 ALTER TABLE t_account 
+    ADD COLUMN IF NOT EXISTS freeze_balance BIGINT NOT NULL DEFAULT 0 COMMENT '冻结余额（分），TCC模式中Try阶段预留的资金' AFTER balance,
     ADD COLUMN IF NOT EXISTS hot_status TINYINT NOT NULL DEFAULT 0 COMMENT '热点账户状态：0-普通账户，1-待标记热点，2-已分片热点，3-已启用缓冲记账' AFTER version,
     ADD COLUMN IF NOT EXISTS shard_count INT DEFAULT NULL COMMENT '影子账户分片数量（热点账户专用）' AFTER hot_status,
     ADD COLUMN IF NOT EXISTS sharding_strategy TINYINT DEFAULT NULL COMMENT '分片策略：1-随机路由，2-轮询路由，3-哈希路由' AFTER shard_count,
@@ -746,3 +844,34 @@ CREATE TABLE IF NOT EXISTS undo_log (
     KEY ix_log_status (log_status),
     KEY ix_log_created (log_created)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Seata AT模式回滚日志表';
+
+-- -----------------------------------------------------
+-- Saga事务日志表 t_saga_transaction_log
+-- 用于记录Saga分布式事务的执行日志，支持补偿和重试
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    saga_id VARCHAR(64) NOT NULL COMMENT 'Saga事务ID',
+    saga_name VARCHAR(128) DEFAULT NULL COMMENT 'Saga事务名称',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '业务流水号',
+    transaction_type TINYINT DEFAULT NULL COMMENT '事务类型：1-TCC 2-SAGA',
+    status TINYINT DEFAULT NULL COMMENT '事务状态：0-PENDING 1-SUCCESS 2-FAILED',
+    step_id VARCHAR(64) DEFAULT NULL COMMENT '步骤ID',
+    step_name VARCHAR(128) DEFAULT NULL COMMENT '步骤名称',
+    phase TINYINT DEFAULT NULL COMMENT '事务阶段：1-TRY 2-CONFIRM 3-CANCEL 4-FORWARD 5-COMPENSATE',
+    step_status TINYINT DEFAULT NULL COMMENT '步骤状态：0-PENDING 1-FORWARD_SUCCESS 2-FORWARD_FAILED 3-COMPENSATE_SUCCESS 4-COMPENSATE_FAILED 5-SKIPPED',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+    params TEXT DEFAULT NULL COMMENT '参数JSON',
+    error_message VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    execute_time DATETIME DEFAULT NULL COMMENT '执行时间',
+    complete_time DATETIME DEFAULT NULL COMMENT '完成时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    KEY idx_saga_id (saga_id),
+    KEY idx_step_status (step_status),
+    KEY idx_retry_count (retry_count),
+    KEY idx_create_time (create_time),
+    KEY idx_business_no (business_no)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Saga事务日志表';

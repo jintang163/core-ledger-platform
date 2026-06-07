@@ -9,7 +9,8 @@ public enum PaymentStatusEnum {
     PROCESSING(1, "处理中"),
     SUCCESS(2, "成功"),
     FAILED(3, "失败"),
-    PARTIAL_SUCCESS(4, "部分成功");
+    PARTIAL_SUCCESS(4, "部分成功"),
+    FROZEN(5, "已冻结");
 
     private final Integer code;
     private final String desc;

@@ -61,4 +61,8 @@ public class ChannelNotificationRequest implements Serializable {
 
     /** 请求时间 */
     private LocalDateTime requestTime;
+
+    /** 扩展参数 */
+    @Builder.Default
+    private java.util.Map<String, Object> extParams = new java.util.HashMap<>();
 }

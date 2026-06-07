@@ -196,4 +196,38 @@ public interface AccountMapper extends BaseMapper<Account> {
      */
     @Select("SELECT * FROM t_account WHERE status = 1 AND freeze_time < #{freezeTime} AND deleted = 0")
     List<Account> selectAbnormalFrozenAccounts(@Param("freezeTime") LocalDateTime freezeTime);
+
+    @Update("UPDATE t_account SET balance = balance - #{amount}, freeze_balance = freeze_balance + #{amount}, " +
+            "version = version + 1, update_time = #{updateTime} " +
+            "WHERE account_id = #{accountId} AND version = #{version} AND deleted = 0")
+    int freezeBalance(
+            @Param("accountId") String accountId,
+            @Param("amount") Long amount,
+            @Param("version") Integer version,
+            @Param("updateTime") LocalDateTime updateTime
+    );
+
+    @Update("UPDATE t_account SET freeze_balance = freeze_balance - #{amount}, " +
+            "update_time = #{updateTime} WHERE account_id = #{accountId} AND deleted = 0 AND freeze_balance >= #{amount}")
+    int unfreezeBalance(
+            @Param("accountId") String accountId,
+            @Param("amount") Long amount,
+            @Param("updateTime") LocalDateTime updateTime
+    );
+
+    @Update("UPDATE t_account SET balance = balance - #{amount}, freeze_balance = freeze_balance - #{amount}, " +
+            "update_time = #{updateTime} WHERE account_id = #{accountId} AND deleted = 0 AND freeze_balance >= #{amount}")
+    int unfreezeAndDeductBalance(
+            @Param("accountId") String accountId,
+            @Param("amount") Long amount,
+            @Param("updateTime") LocalDateTime updateTime
+    );
+
+    @Update("UPDATE t_account SET balance = balance + #{amount}, freeze_balance = freeze_balance - #{amount}, " +
+            "update_time = #{updateTime} WHERE account_id = #{accountId} AND deleted = 0 AND freeze_balance >= #{amount}")
+    int unfreezeAndAddBalance(
+            @Param("accountId") String accountId,
+            @Param("amount") Long amount,
+            @Param("updateTime") LocalDateTime updateTime
+    );
 }

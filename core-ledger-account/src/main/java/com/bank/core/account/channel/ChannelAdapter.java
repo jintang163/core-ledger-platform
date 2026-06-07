@@ -38,4 +38,18 @@ public interface ChannelAdapter {
      * @return 通知响应
      */
     ChannelNotificationResponse queryOrderStatus(String channelCode, String channelOrderNo);
+
+    /**
+     * 通知渠道-跨行转账请求
+     * @param request 通知请求
+     * @return 通知响应
+     */
+    ChannelNotificationResponse notifyCrossBankTransfer(ChannelNotificationRequest request);
+
+    /**
+     * 取消渠道交易
+     * @param params 取消参数
+     * @return 是否取消成功
+     */
+    boolean cancelTransaction(java.util.Map<String, Object> params);
 }

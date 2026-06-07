@@ -20,4 +20,8 @@ public interface PaymentService {
     PaymentOrderVO getPaymentOrderByBusinessNo(String businessNo);
 
     Page<PaymentOrderVO> queryPaymentOrders(PaymentQueryDTO dto);
+
+    PaymentOrderVO refund(String originalPaymentId, String refundAccountId,
+                           java.math.BigDecimal amount, String currency,
+                           String businessNo, String operator, String remark);
 }

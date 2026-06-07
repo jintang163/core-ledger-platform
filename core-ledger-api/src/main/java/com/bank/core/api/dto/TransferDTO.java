@@ -63,6 +63,21 @@ public class TransferDTO implements Serializable {
             notes = "业务备注信息")
     private String remark;
 
+    /** 渠道编码（跨行转账时使用） */
+    @ApiModelProperty(value = "渠道编码", example = "ALIPAY",
+            notes = "跨行转账时使用的渠道编码")
+    private String channelCode;
+
+    /** 转账类型：1-内部转账 2-跨行转账 */
+    @ApiModelProperty(value = "转账类型", example = "1",
+            notes = "1-内部转账 2-跨行转账")
+    private Integer transferType;
+
+    /** 分布式事务类型：1-TCC 2-Saga */
+    @ApiModelProperty(value = "分布式事务类型", example = "1",
+            notes = "1-TCC 2-Saga")
+    private Integer distributedTxType;
+
     /** 操作员 */
     @ApiModelProperty(value = "操作员", example = "admin",
             notes = "操作人标识")

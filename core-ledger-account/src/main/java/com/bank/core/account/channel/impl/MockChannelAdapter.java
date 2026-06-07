@@ -102,4 +102,41 @@ public class MockChannelAdapter implements ChannelAdapter {
                 .channelTime(LocalDateTime.now())
                 .build();
     }
+
+    @Override
+    public ChannelNotificationResponse notifyCrossBankTransfer(ChannelNotificationRequest request) {
+        log.info("【模拟渠道】接收跨行转账通知请求, request: {}", JSON.toJSONString(request));
+
+        try {
+            Thread.sleep(200);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        ChannelNotificationResponse response = ChannelNotificationResponse.builder()
+                .success(true)
+                .responseCode("MOCK_0000")
+                .responseMessage("模拟渠道跨行转账通知成功")
+                .channelOrderNo("MOCK_CROSS_" + System.currentTimeMillis())
+                .channelTime(LocalDateTime.now())
+                .rawResponse(JSON.toJSONString(request))
+                .build();
+
+        log.info("【模拟渠道】跨行转账通知响应, response: {}", JSON.toJSONString(response));
+        return response;
+    }
+
+    @Override
+    public boolean cancelTransaction(java.util.Map<String, Object> params) {
+        log.info("【模拟渠道】取消交易, params: {}", JSON.toJSONString(params));
+
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        log.info("【模拟渠道】取消交易成功");
+        return true;
+    }
 }

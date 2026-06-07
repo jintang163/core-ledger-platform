@@ -64,6 +64,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
     private final ChannelAdapterFactory channelAdapterFactory;
+    private final com.bank.core.account.service.DistributedTransactionService distributedTransactionService;
 
     /**
      * 单账户充值（入金）
@@ -921,6 +922,50 @@ public class PaymentServiceImpl implements PaymentService {
         } catch (Exception e) {
             log.error("发送渠道回调事件失败, paymentId: {}", vo.getPaymentId(), e);
         }
+    }
+
+    @Override
+    public PaymentOrderVO refund(String originalPaymentId, String refundAccountId,
+                                  java.math.BigDecimal amount, String currency,
+                                  String businessNo, String operator, String remark) {
+        log.info("开始原路退款, originalPaymentId={}, refundAccountId={}, amount={}",
+                originalPaymentId, refundAccountId, amount);
+
+        PaymentOrder originalOrder = paymentOrderMapper.selectByPaymentId(originalPaymentId);
+        if (originalOrder == null) {
+            throw new BusinessException(ResultCodeEnum.PAYMENT_ORDER_NOT_EXIST, "原支付订单不存在");
+        }
+
+        if (!PaymentStatusEnum.SUCCESS.getCode().equals(originalOrder.getStatus())) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "原支付订单状态不正确，无法退款");
+        }
+
+        if (originalOrder.getAmount().compareTo(amount) < 0) {
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "退款金额不能大于原支付金额");
+        }
+
+        String sagaId = distributedTransactionService.executeRefundWithSaga(
+                originalPaymentId, refundAccountId, amount, currency, businessNo, operator, remark
+        );
+
+        String refundPaymentId = "REFUND_" + sagaId;
+        PaymentOrder refundOrder = paymentOrderMapper.selectByPaymentId(refundPaymentId);
+        if (refundOrder == null) {
+            refundOrder = new PaymentOrder();
+            refundOrder.setPaymentId(refundPaymentId);
+            refundOrder.setPaymentType(PaymentTypeEnum.REFUND.getCode());
+            refundOrder.setStatus(PaymentStatusEnum.SUCCESS.getCode());
+            refundOrder.setAmount(amount);
+            refundOrder.setCurrency(currency);
+        }
+
+        PaymentOrderVO vo = new PaymentOrderVO();
+        org.springframework.beans.BeanUtils.copyProperties(refundOrder, vo);
+        vo.setPaymentTypeDesc(PaymentTypeEnum.REFUND.getDesc());
+        vo.setStatusDesc(PaymentStatusEnum.SUCCESS.getDesc());
+
+        log.info("原路退款完成, sagaId={}, originalPaymentId={}, amount={}", sagaId, originalPaymentId, amount);
+        return vo;
     }
 
     private void deleteAccountCache(String accountId) {

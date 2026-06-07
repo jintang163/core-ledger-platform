@@ -10,7 +10,9 @@ public enum TransactionTypeEnum {
     WITHDRAW(3, "取款"),
     FEE(4, "手续费"),
     INTEREST(5, "利息"),
-    ADJUST(6, "调账");
+    ADJUST(6, "调账"),
+    REFUND(7, "退款"),
+    CROSS_BANK_TRANSFER(8, "跨行转账");
 
     private final Integer code;
     private final String desc;

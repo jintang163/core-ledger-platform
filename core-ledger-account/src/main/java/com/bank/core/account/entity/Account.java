@@ -57,6 +57,9 @@ public class Account implements Serializable {
     /** 账户余额（单位：分） */
     private Long balance;
 
+    /** 冻结余额（单位：分），TCC模式中Try阶段预留的资金 */
+    private Long freezeBalance;
+
     /** 账户状态（0-正常, 1-冻结, 2-已销户） */
     private Integer status;
 

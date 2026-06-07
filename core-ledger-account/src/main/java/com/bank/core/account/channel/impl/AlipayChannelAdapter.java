@@ -102,4 +102,30 @@ public class AlipayChannelAdapter implements ChannelAdapter {
                 .channelTime(LocalDateTime.now())
                 .build();
     }
+
+    @Override
+    public ChannelNotificationResponse notifyCrossBankTransfer(ChannelNotificationRequest request) {
+        log.info("【支付宝渠道】接收跨行转账通知请求, paymentId: {}, amount: {}",
+                request.getPaymentId(), request.getAmount());
+
+        log.warn("【支付宝渠道】当前为模拟实现，请接入真实支付宝SDK");
+
+        return ChannelNotificationResponse.builder()
+                .success(true)
+                .responseCode("ALIPAY_0000")
+                .responseMessage("支付宝跨行转账通知受理成功")
+                .channelOrderNo("ALIPAY_CROSS_" + System.currentTimeMillis())
+                .channelTime(LocalDateTime.now())
+                .rawResponse(JSON.toJSONString(request))
+                .build();
+    }
+
+    @Override
+    public boolean cancelTransaction(java.util.Map<String, Object> params) {
+        log.info("【支付宝渠道】取消交易, params: {}", JSON.toJSONString(params));
+
+        log.warn("【支付宝渠道】当前为模拟实现，请接入真实支付宝SDK");
+
+        return true;
+    }
 }
