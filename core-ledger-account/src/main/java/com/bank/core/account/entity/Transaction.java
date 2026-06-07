@@ -1,6 +1,7 @@
 package com.bank.core.account.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -21,6 +22,11 @@ import java.time.LocalDateTime;
  * - 每笔交易包含一个或多个借贷分录，借贷必相等
  * - 交易状态用于追踪处理进度
  * - 支持按业务流水号反向查询
+ *
+ * 分片策略：
+ * - 分库键：account_id（通过交易分录关联）+ transaction_time 复合分片
+ * - 分表键：transaction_time 按月分表（t_transaction_202506, t_transaction_202507, ...）
+ * - 索引优化：(transaction_time, status), (status, transaction_time), (transaction_type, transaction_time)
  */
 @Data
 @TableName("t_transaction")

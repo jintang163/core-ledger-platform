@@ -226,8 +226,8 @@ public class TransactionServiceImpl implements TransactionService {
             // 6.3 账户校验与准备（状态检查、余额校验，考虑热点账户和缓冲记账）
             List<Account> accounts = validateAndPrepareAccounts(dto.getEntries());
 
-            // 6.4 生成交易ID和流水号
-            String transactionId = SnowflakeIdGenerator.nextIdStr();
+            // 6.4 生成交易ID和流水号（使用带业务前缀的ID，便于分片路由和识别）
+            String transactionId = SnowflakeIdGenerator.generateTransactionId();
             String transactionNo = SnowflakeIdGenerator.generateTransactionNo();
             String voucherNo = SnowflakeIdGenerator.generateVoucherNo();
 
@@ -291,8 +291,8 @@ public class TransactionServiceImpl implements TransactionService {
      * @return 交易结果VO（虚拟成功响应）
      */
     private TransactionVO processWithBufferAccounting(TransactionCreateDTO dto, RBucket<String> idempotentBucket) {
-        // 生成虚拟交易ID，用于幂等和查询追踪
-        String transactionId = SnowflakeIdGenerator.nextIdStr();
+        // 生成虚拟交易ID，用于幂等和查询追踪（使用带业务前缀的ID）
+        String transactionId = SnowflakeIdGenerator.generateTransactionId();
 
         // 对每个分录记录缓冲流水
         for (TransactionEntryDTO entry : dto.getEntries()) {

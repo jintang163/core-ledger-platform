@@ -1,0 +1,3 @@
+com.bank.core.account.sharding.AccountIdHashShardingAlgorithm
+com.bank.core.account.sharding.TransactionTimeShardingAlgorithm
+com.bank.core.account.sharding.TransactionComplexShardingAlgorithm

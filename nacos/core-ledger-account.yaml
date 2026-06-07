@@ -7,6 +7,18 @@ spring:
   application:
     name: core-ledger-account
 
+# 雪花算法ID生成器配置
+# 多实例部署时，每个实例必须分配唯一的workerId（0-31）
+# 跨数据中心部署时，每个数据中心分配唯一的dataCenterId（0-31）
+snowflake:
+  worker-id: ${SNOWFLAKE_WORKER_ID:1}
+  data-center-id: ${SNOWFLAKE_DATA_CENTER_ID:1}
+
+# ShardingSphere 配置
+sharding:
+  snowflake:
+    worker-id: ${SNOWFLAKE_WORKER_ID:1}
+
 management:
   endpoints:
     web:
@@ -24,7 +36,6 @@ logging:
   level:
     root: INFO
     com.bank.core: DEBUG
-
     org.apache.shardingsphere: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"

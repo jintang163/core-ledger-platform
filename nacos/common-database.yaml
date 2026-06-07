@@ -5,7 +5,7 @@ spring:
       ds0:
         type: com.zaxxer.hikari.HikariDataSource
         driver-class-name: com.mysql.cj.jdbc.Driver
-        jdbc-url: jdbc:mysql://mysql:3306/core_ledger_0?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+        jdbc-url: jdbc:mysql://mysql:3306/core_ledger_0?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
         username: root
         password: root123
         hikari:
@@ -16,7 +16,7 @@ spring:
       ds1:
         type: com.zaxxer.hikari.HikariDataSource
         driver-class-name: com.mysql.cj.jdbc.Driver
-        jdbc-url: jdbc:mysql://mysql:3306/core_ledger_1?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai
+        jdbc-url: jdbc:mysql://mysql:3306/core_ledger_1?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
         username: root
         password: root123
         hikari:
@@ -31,8 +31,26 @@ spring:
             actual-data-nodes: ds$->{0..1}.t_account
             database-strategy:
               standard:
-                sharding-column: user_id
-                sharding-algorithm-name: database-inline
+                sharding-column: account_id
+                sharding-algorithm-name: account-id-hash
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+          t_account_shard:
+            actual-data-nodes: ds$->{0..1}.t_account_shard
+            database-strategy:
+              standard:
+                sharding-column: main_account_id
+                sharding-algorithm-name: account-id-hash
+            key-generate-strategy:
+              column: id
+              key-generator-name: snowflake
+          t_account_buffer_log:
+            actual-data-nodes: ds$->{0..1}.t_account_buffer_log
+            database-strategy:
+              standard:
+                sharding-column: account_id
+                sharding-algorithm-name: account-id-hash
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
@@ -41,69 +59,63 @@ spring:
             database-strategy:
               standard:
                 sharding-column: account_id
-                sharding-algorithm-name: database-inline-account
+                sharding-algorithm-name: account-id-hash
             table-strategy:
               standard:
                 sharding-column: account_id
-                sharding-algorithm-name: freeze-log-inline
+                sharding-algorithm-name: freeze-log-hash
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
           t_transaction:
-            actual-data-nodes: ds$->{0..1}.t_transaction_$->{0..3}
+            actual-data-nodes: ds$->{0..1}.t_transaction_2025$->{01..12},ds$->{0..1}.t_transaction_2026$->{01..12}
             database-strategy:
-              standard:
-                sharding-column: transaction_id
-                sharding-algorithm-name: database-inline-tx
+              complex:
+                sharding-columns: account_id,transaction_time
+                sharding-algorithm-name: transaction-complex-db
             table-strategy:
               standard:
-                sharding-column: transaction_id
-                sharding-algorithm-name: transaction-inline
+                sharding-column: transaction_time
+                sharding-algorithm-name: transaction-time-month
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
           t_transaction_entry:
-            actual-data-nodes: ds$->{0..1}.t_transaction_entry_$->{0..3}
+            actual-data-nodes: ds$->{0..1}.t_transaction_entry_2025$->{01..12},ds$->{0..1}.t_transaction_entry_2026$->{01..12}
             database-strategy:
-              standard:
-                sharding-column: transaction_id
-                sharding-algorithm-name: database-inline-tx
+              complex:
+                sharding-columns: account_id,create_time
+                sharding-algorithm-name: transaction-complex-db
             table-strategy:
               standard:
-                sharding-column: transaction_id
-                sharding-algorithm-name: transaction-entry-inline
+                sharding-column: create_time
+                sharding-algorithm-name: transaction-entry-time-month
             key-generate-strategy:
               column: id
               key-generator-name: snowflake
         sharding-algorithms:
-          database-inline:
-            type: INLINE
+          account-id-hash:
+            type: ACCOUNT_ID_HASH
             props:
-              algorithm-expression: ds$->{Math.abs(user_id.hashCode()) % 2}
-          database-inline-account:
-            type: INLINE
-            props:
-              algorithm-expression: ds$->{Math.abs(account_id.hashCode()) % 2}
-          database-inline-tx:
-            type: INLINE
-            props:
-              algorithm-expression: ds$->{Math.abs(transaction_id.hashCode()) % 2}
-          freeze-log-inline:
+              database-count: 2
+          freeze-log-hash:
             type: INLINE
             props:
               algorithm-expression: t_account_freeze_log_$->{Math.abs(account_id.hashCode()) % 4}
-          transaction-inline:
-            type: INLINE
+          transaction-complex-db:
+            type: TRANSACTION_COMPLEX
             props:
-              algorithm-expression: t_transaction_$->{Math.abs(transaction_id.hashCode()) % 4}
-          transaction-entry-inline:
-            type: INLINE
-            props:
-              algorithm-expression: t_transaction_entry_$->{Math.abs(transaction_id.hashCode()) % 4}
+              database-count: 2
+          transaction-time-month:
+            type: TRANSACTION_TIME_MONTH
+          transaction-entry-time-month:
+            type: TRANSACTION_TIME_MONTH
         key-generators:
           snowflake:
             type: SNOWFLAKE
             props:
-              worker-id: 1
+              worker-id: ${sharding.snowflake.worker-id:1}
+              max-vibration-offset: 1
     props:
-      sql-show: false
+      sql-show: true
+      check-table-metadata-enabled: false

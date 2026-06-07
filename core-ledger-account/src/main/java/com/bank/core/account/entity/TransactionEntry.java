@@ -22,6 +22,11 @@ import java.time.LocalDateTime;
  * - 借贷方向：1-借方, 2-贷方
  * - 所有分录的借方金额合计 = 贷方金额合计
  * - 支持按科目代码进行财务统计
+ *
+ * 分片策略：
+ * - 分库键：account_id + create_time 复合分片（与交易表保持一致）
+ * - 分表键：create_time 按月分表（t_transaction_entry_202506, ...）
+ * - 索引优化：(account_id, create_time), (account_id, transaction_id), (create_time)
  */
 @Data
 @TableName("t_transaction_entry")

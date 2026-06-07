@@ -63,7 +63,7 @@ public class AccountServiceImpl implements AccountService {
                 throw new BusinessException(ResultCodeEnum.ACCOUNT_ALREADY_EXIST);
             }
 
-            String accountId = SnowflakeIdGenerator.nextIdStr();
+            String accountId = SnowflakeIdGenerator.generateAccountId();
             String accountNo = SnowflakeIdGenerator.generateAccountNo();
 
             Account account = new Account();

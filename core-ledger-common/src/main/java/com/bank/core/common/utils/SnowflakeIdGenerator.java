@@ -1,6 +1,12 @@
 package com.bank.core.common.utils;
 
 import cn.hutool.core.util.IdUtil;
+import com.bank.core.common.service.IdGeneratorService;
+import org.springframework.context.annotation.DependsOn;
+import org.springframework.stereotype.Component;
+
+import javax.annotation.PostConstruct;
+import javax.annotation.Resource;
 
 /**
  * 雪花算法ID生成器工具类
@@ -15,9 +21,10 @@ import cn.hutool.core.util.IdUtil;
  * 
  * ID前缀约定：
  * - 无前缀：主键ID（long型）
+ * - ACC：账户ID
  * - REQ：请求ID（用于幂等校验）
  * - TRACE：链路追踪ID
- * - TXN：交易流水号
+ * - TXN：交易ID/交易流水号
  * - VCH：记账凭证号
  * - ENTRY：交易分录ID
  * - PAY：支付单号
@@ -25,18 +32,39 @@ import cn.hutool.core.util.IdUtil;
  * - BAT：批量单号
  * - ITEM：批量明细ID
  * - BUF：缓冲记账流水ID
+ * - FRZ：冻结日志ID
+ * - MSG：消息ID
+ * - CBL：回调日志ID
+ * - SAGA：Saga事务ID
+ * 
+ * 设计说明：
+ * 优先使用Spring管理的IdGeneratorService（支持配置化workerId）
+ * 当Spring上下文不可用时（如静态工具类场景），降级使用默认静态实例
  */
+@Component
+@DependsOn("idGeneratorService")
 public class SnowflakeIdGenerator {
 
     /** 工作机器ID（0-31） */
-    private static final long WORKER_ID = 1L;
+    private static final long DEFAULT_WORKER_ID = 1L;
 
     /** 数据中心ID（0-31） */
-    private static final long DATA_CENTER_ID = 1L;
+    private static final long DEFAULT_DATA_CENTER_ID = 1L;
 
-    /** 雪花算法实例 */
-    private static final cn.hutool.core.lang.Snowflake SNOWFLAKE =
-            IdUtil.getSnowflake(WORKER_ID, DATA_CENTER_ID);
+    /** 降级使用的静态雪花算法实例 */
+    private static final cn.hutool.core.lang.Snowflake DEFAULT_SNOWFLAKE =
+            IdUtil.getSnowflake(DEFAULT_WORKER_ID, DEFAULT_DATA_CENTER_ID);
+
+    /** Spring管理的ID生成服务（优先级更高） */
+    private static IdGeneratorService idGeneratorService;
+
+    @Resource
+    private IdGeneratorService injectedIdGeneratorService;
+
+    @PostConstruct
+    public void init() {
+        idGeneratorService = this.injectedIdGeneratorService;
+    }
 
     /**
      * 生成雪花算法ID（long型）
@@ -44,7 +72,10 @@ public class SnowflakeIdGenerator {
      * @return 全局唯一ID
      */
     public static long nextId() {
-        return SNOWFLAKE.nextId();
+        if (idGeneratorService != null) {
+            return idGeneratorService.nextId();
+        }
+        return DEFAULT_SNOWFLAKE.nextId();
     }
 
     /**
@@ -52,7 +83,22 @@ public class SnowflakeIdGenerator {
      * @return 全局唯一ID字符串
      */
     public static String nextIdStr() {
-        return SNOWFLAKE.nextIdStr();
+        if (idGeneratorService != null) {
+            return idGeneratorService.nextIdStr();
+        }
+        return DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 生成账户ID
+     * 格式：ACC + 雪花ID
+     * @return 账户ID
+     */
+    public static String generateAccountId() {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateAccountId();
+        }
+        return "ACC" + DEFAULT_SNOWFLAKE.nextIdStr();
     }
 
     /**
@@ -61,7 +107,10 @@ public class SnowflakeIdGenerator {
      * @return 账户号
      */
     public static String generateAccountNo() {
-        return "622202" + SNOWFLAKE.nextIdStr().substring(6, 18);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateAccountNo();
+        }
+        return "622202" + DEFAULT_SNOWFLAKE.nextIdStr().substring(6, 18);
     }
 
     /**
@@ -71,7 +120,10 @@ public class SnowflakeIdGenerator {
      * @return 请求ID
      */
     public static String generateRequestId() {
-        return "REQ" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(12);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateRequestId();
+        }
+        return "REQ" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(12);
     }
 
     /**
@@ -81,7 +133,22 @@ public class SnowflakeIdGenerator {
      * @return 追踪ID
      */
     public static String generateTraceId() {
-        return "TRACE" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(12);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateTraceId();
+        }
+        return "TRACE" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(12);
+    }
+
+    /**
+     * 生成交易ID
+     * 格式：TXN + 雪花ID
+     * @return 交易ID
+     */
+    public static String generateTransactionId() {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateTransactionId();
+        }
+        return "TXN" + DEFAULT_SNOWFLAKE.nextIdStr();
     }
 
     /**
@@ -90,7 +157,10 @@ public class SnowflakeIdGenerator {
      * @return 交易流水号
      */
     public static String generateTransactionNo() {
-        return "TXN" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateTransactionNo();
+        }
+        return "TXN" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(10);
     }
 
     /**
@@ -99,7 +169,10 @@ public class SnowflakeIdGenerator {
      * @return 记账凭证号
      */
     public static String generateVoucherNo() {
-        return "VCH" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateVoucherNo();
+        }
+        return "VCH" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(10);
     }
 
     /**
@@ -108,7 +181,10 @@ public class SnowflakeIdGenerator {
      * @return 交易分录ID
      */
     public static String generateEntryId() {
-        return "ENTRY" + SNOWFLAKE.nextIdStr();
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateEntryId();
+        }
+        return "ENTRY" + DEFAULT_SNOWFLAKE.nextIdStr();
     }
 
     /**
@@ -117,7 +193,10 @@ public class SnowflakeIdGenerator {
      * @return 支付单号
      */
     public static String generatePaymentNo() {
-        return "PAY" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generatePaymentNo();
+        }
+        return "PAY" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(10);
     }
 
     /**
@@ -126,7 +205,10 @@ public class SnowflakeIdGenerator {
      * @return 转账单号
      */
     public static String generateTransferNo() {
-        return "TRF" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateTransferNo();
+        }
+        return "TRF" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(10);
     }
 
     /**
@@ -135,7 +217,10 @@ public class SnowflakeIdGenerator {
      * @return 批量单号
      */
     public static String generateBatchNo() {
-        return "BAT" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateBatchNo();
+        }
+        return "BAT" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(10);
     }
 
     /**
@@ -144,7 +229,10 @@ public class SnowflakeIdGenerator {
      * @return 批量明细ID
      */
     public static String generateBatchItemId() {
-        return "ITEM" + SNOWFLAKE.nextIdStr();
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateBatchItemId();
+        }
+        return "ITEM" + DEFAULT_SNOWFLAKE.nextIdStr();
     }
 
     /**
@@ -154,6 +242,71 @@ public class SnowflakeIdGenerator {
      * @return 缓冲记账流水ID
      */
     public static String generateBufferId() {
-        return "BUF" + System.currentTimeMillis() + SNOWFLAKE.nextIdStr().substring(10);
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateBufferId();
+        }
+        return "BUF" + System.currentTimeMillis() + DEFAULT_SNOWFLAKE.nextIdStr().substring(10);
+    }
+
+    /**
+     * 生成冻结日志ID
+     * 格式：FRZ + 雪花ID
+     * @return 冻结日志ID
+     */
+    public static String generateFreezeLogId() {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateFreezeLogId();
+        }
+        return "FRZ" + DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 生成消息ID
+     * 格式：MSG + 雪花ID
+     * @return 消息ID
+     */
+    public static String generateMessageId() {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateMessageId();
+        }
+        return "MSG" + DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 生成回调日志ID
+     * 格式：CBL + 雪花ID
+     * @return 回调日志ID
+     */
+    public static String generateCallbackLogId() {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateCallbackLogId();
+        }
+        return "CBL" + DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 生成Saga事务ID
+     * 格式：SAGA + 雪花ID
+     * @return Saga事务ID
+     */
+    public static String generateSagaId() {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateSagaId();
+        }
+        return "SAGA" + DEFAULT_SNOWFLAKE.nextIdStr();
+    }
+
+    /**
+     * 生成分片ID
+     * 格式：{mainAccountId}_SHARD_{index}
+     * @param mainAccountId 主账户ID
+     * @param shardIndex 分片索引
+     * @return 分片ID
+     */
+    public static String generateShardId(String mainAccountId, int shardIndex) {
+        if (idGeneratorService != null) {
+            return idGeneratorService.generateShardId(mainAccountId, shardIndex);
+        }
+        return mainAccountId + "_SHARD_" + String.format("%02d", shardIndex);
     }
 }

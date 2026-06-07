@@ -26,6 +26,11 @@ import java.time.LocalDateTime;
  * - 支持多种账户类型（个人账户、企业账户等）
  * - 支持多种状态（正常、冻结、已销户等）
  * - 热点账户状态用于标识是否启用分片或缓冲记账
+ *
+ * 分片策略：
+ * - 分库键：account_id 哈希分片（确保同一账户数据在同一库）
+ * - 不分表（单表单库存储账户信息）
+ * - 索引优化：(account_id) 唯一索引，(user_id, account_type, currency) 联合索引
  */
 @Data
 @TableName("t_account")
