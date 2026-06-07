@@ -101,12 +101,12 @@ groups:
           value: "{{ $value | humanizePercentage }}"
 
       - alert: BufferAccountingFailed
-        expr: increase(account_buffer_log_failed_total[1h]) > 0
+        expr: account_buffer_log_failed_count > 0
         for: 1m
         labels:
           severity: warning
           category: mq
         annotations:
           summary: "缓冲记账处理失败"
-          description: "过去1小时内有缓冲记账处理失败，失败数量: {{ $value }}"
+          description: "存在缓冲记账处理失败，失败数量: {{ $value }}"
           value: "{{ $value }}"

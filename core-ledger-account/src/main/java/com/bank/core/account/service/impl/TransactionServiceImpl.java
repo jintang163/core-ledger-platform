@@ -83,6 +83,9 @@ public class TransactionServiceImpl implements TransactionService {
     /** Prometheus 监控配置 - 用于记录各种指标 */
     private final PrometheusConfig prometheusConfig;
 
+    /** 链路追踪工具类 - 用于完善 SkyWalking 集成 */
+    private final com.bank.core.account.util.TraceContextUtil traceContextUtil;
+
     /**
      * 创建交易（记账）
      * 
@@ -115,20 +118,33 @@ public class TransactionServiceImpl implements TransactionService {
         prometheusConfig.recordTransactionQps();
         prometheusConfig.recordTransactionAmount(dto.getTotalAmount());
 
+        traceContextUtil.setTransactionTag(dto.getRequestId());
+        traceContextUtil.setCustomTag("businessNo", dto.getBusinessNo());
+        traceContextUtil.setCustomTag("transactionType", dto.getTransactionType());
+        traceContextUtil.setCustomTag("amount", dto.getTotalAmount().toString());
+
         return prometheusConfig.recordTransactionLatency(() -> {
             try {
-                TransactionVO result = doCreateTransaction(dto);
+                TransactionVO result = traceContextUtil.executeWithNewSpan("doCreateTransaction", () -> doCreateTransaction(dto));
                 prometheusConfig.recordTransactionSuccess();
                 prometheusConfig.recordDistributedTransactionSuccess();
+                traceContextUtil.annotate("transaction-success");
                 return result;
             } catch (Exception e) {
                 prometheusConfig.recordTransactionFailure();
                 prometheusConfig.recordDistributedTransactionFailure();
-                if (e instanceof BusinessException &&
-                        ResultCodeEnum.CONCURRENT_UPDATE_FAILED.getCode().equals(((BusinessException) e).getCode())) {
-                    prometheusConfig.recordHotAccountConflict();
+                traceContextUtil.recordError(e);
+                traceContextUtil.annotate("transaction-failed: " + e.getMessage());
+                if (e instanceof BusinessException) {
+                    BusinessException be = (BusinessException) e;
+                    if (ResultCodeEnum.CONCURRENT_UPDATE_FAILED.getCode().equals(be.getCode())) {
+                        prometheusConfig.recordHotAccountConflict();
+                        traceContextUtil.setCustomTag("hotAccountConflict", "true");
+                    }
                 }
                 throw e;
+            } finally {
+                traceContextUtil.clearContext();
             }
         });
     }

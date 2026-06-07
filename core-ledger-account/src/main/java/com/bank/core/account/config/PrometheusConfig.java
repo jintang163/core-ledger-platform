@@ -21,6 +21,7 @@ public class PrometheusConfig {
     private final AtomicLong frozenAccountExceptions = new AtomicLong(0);
     private final AtomicLong distributedTransactionTimeouts = new AtomicLong(0);
     private final AtomicLong messageQueueLag = new AtomicLong(0);
+    private final AtomicLong bufferLogFailedCount = new AtomicLong(0);
     private final Map<String, AtomicLong> gauges = new ConcurrentHashMap<>();
 
     private Counter transactionQpsCounter;
@@ -63,6 +64,10 @@ public class PrometheusConfig {
 
         Gauge.builder("message.queue.lag", messageQueueLag, AtomicLong::get)
                 .description("消息队列堆积数量")
+                .register(meterRegistry);
+
+        Gauge.builder("account.buffer.log.failed.count", bufferLogFailedCount, AtomicLong::get)
+                .description("缓冲记账失败数量")
                 .register(meterRegistry);
 
         Counter.builder("account.create.total")
@@ -211,6 +216,10 @@ public class PrometheusConfig {
 
     public void setMessageQueueLag(long lag) {
         messageQueueLag.set(lag);
+    }
+
+    public void setBufferLogFailedCount(long count) {
+        bufferLogFailedCount.set(count);
     }
 
     public void registerGauge(String name, String description, AtomicLong value) {

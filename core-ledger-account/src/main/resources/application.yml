@@ -1,11 +1,26 @@
+spring:
+  application:
+    name: core-ledger-account
+  main:
+    allow-bean-definition-overriding: true
+  sleuth:
+    enabled: true
+    sampler:
+      probability: 1.0
+    web:
+      skip-pattern: (^/actuator.*|^/swagger.*|^/v2/api-docs.*|^/doc.html.*)
+    async:
+      enabled: true
+    scheduled:
+      enabled: true
+    log:
+      slf4j:
+        whitelisted-mdc-keys: traceId,spanId,transactionId,globalTxId
+
 server:
   port: ${SERVER_PORT:8081}
   servlet:
     context-path: /account
-
-spring:
-  main:
-    allow-bean-definition-overriding: true
 
 dubbo:
   registry:
@@ -65,21 +80,6 @@ management:
           autotime:
             enabled: true
             percentiles: 0.5, 0.9, 0.95, 0.99
-
-spring:
-  sleuth:
-    enabled: true
-    sampler:
-      probability: 1.0
-    web:
-      skip-pattern: (^/actuator.*|^/swagger.*|^/v2/api-docs.*|^/doc.html.*)
-    async:
-      enabled: true
-    scheduled:
-      enabled: true
-    log:
-      slf4j:
-        whitelisted-mdc-keys: traceId,spanId,transactionId,globalTxId
 
 skywalking:
   plugin:

@@ -67,6 +67,12 @@ public class MonitorScheduler {
                 log.warn("消息队列（缓冲流水）堆积严重，当前待处理数量: {}", pendingCount);
             }
 
+            long failedCount = accountBufferLogMapper.countFailedLogs();
+            prometheusConfig.setBufferLogFailedCount(failedCount);
+            if (failedCount > 0) {
+                log.warn("检测到 {} 条缓冲记账处理失败", failedCount);
+            }
+
             RMap<String, Integer> timeoutMap = redissonClient.getMap(SEATA_TIMEOUT_KEY);
             if (!timeoutMap.isEmpty()) {
                 int totalTimeout = timeoutMap.values().stream().mapToInt(Integer::intValue).sum();
@@ -88,5 +94,9 @@ public class MonitorScheduler {
         } catch (Exception e) {
             log.error("记录Seata事务超时失败", e);
         }
+    }
+
+    public PrometheusConfig getPrometheusConfig() {
+        return prometheusConfig;
     }
 }
