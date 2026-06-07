@@ -1,6 +1,7 @@
 package com.bank.core.account.service.impl;
 
 import com.alibaba.fastjson.JSON;
+import com.bank.core.account.config.PrometheusConfig;
 import com.bank.core.account.entity.Account;
 import com.bank.core.account.entity.AccountShard;
 import com.bank.core.account.mapper.AccountMapper;
@@ -52,6 +53,7 @@ public class HotAccountServiceImpl implements HotAccountService {
     private final AccountMapper accountMapper;
     private final AccountShardMapper accountShardMapper;
     private final RedissonClient redissonClient;
+    private final PrometheusConfig prometheusConfig;
 
     /**
      * 轮询计数器
@@ -208,29 +210,25 @@ public class HotAccountServiceImpl implements HotAccountService {
         log.debug("更新影子账户余额, shardId: {}, amount: {}分", shardId, amountFen);
 
         try {
-            // 使用重试工具处理乐观锁并发冲突
-            // 重试机制：默认重试3次，每次间隔递增
             RetryUtil.executeWithRetry(() -> {
-                // 每次重试都需要重新查询最新的分片信息和版本号
                 AccountShard shard = accountShardMapper.selectByShardId(shardId);
                 if (shard == null) {
                     throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST, "影子账户不存在: " + shardId);
                 }
 
-                // 带版本号更新余额，防止并发冲突
-                // 如果版本号不匹配，返回0，触发重试
                 int updated = accountShardMapper.updateBalanceWithVersion(
                         shardId, amountFen, shard.getVersion(), LocalDateTime.now());
 
                 if (updated == 0) {
+                    prometheusConfig.recordHotAccountConflict();
                     throw new BusinessException(ResultCodeEnum.CONCURRENT_UPDATE_FAILED);
                 }
                 return null;
             });
             return true;
         } catch (Exception e) {
-            // 重试全部失败，记录错误日志
             log.error("更新影子账户余额失败, shardId: {}", shardId, e);
+            prometheusConfig.recordHotAccountConflict();
             return false;
         }
     }
@@ -240,56 +238,55 @@ public class HotAccountServiceImpl implements HotAccountService {
     public Long mergeShards(String mainAccountId) {
         log.info("归并影子账户余额, mainAccountId: {}", mainAccountId);
 
-        // 使用分布式锁防止同一账户并发归并
-        String lockKey = CommonConstants.SHARD_MERGE_LOCK_PREFIX + mainAccountId;
-        return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            // 校验主账户是否存在
-            Account mainAccount = accountMapper.selectByAccountId(mainAccountId);
-            if (mainAccount == null) {
-                throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
-            }
-
-            // 查询所有活跃的影子账户
-            List<AccountShard> shards = accountShardMapper.selectActiveShards(mainAccountId);
-            long totalAmount = 0L;
-
-            // 逐个归并每个影子账户的余额
-            for (AccountShard shard : shards) {
-                // 余额为0的分片跳过，提高效率
-                if (shard.getBalance() == null || shard.getBalance() == 0L) {
-                    continue;
+        final long[] result = {0L};
+        prometheusConfig.recordHotAccountMergeLatency(() -> {
+            String lockKey = CommonConstants.SHARD_MERGE_LOCK_PREFIX + mainAccountId;
+            result[0] = DistributedLockUtil.executeWithLock(lockKey, () -> {
+                Account mainAccount = accountMapper.selectByAccountId(mainAccountId);
+                if (mainAccount == null) {
+                    throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
                 }
 
-                // 累加归并总金额
-                totalAmount += shard.getBalance();
+                List<AccountShard> shards = accountShardMapper.selectActiveShards(mainAccountId);
+                long totalAmount = 0L;
 
-                // 先更新归并状态为"归并中"，防止重复处理
-                accountShardMapper.updateMergeStatus(shard.getShardId(), 1, LocalDateTime.now());
-
-                // 使用乐观锁+重试机制更新主账户余额
-                RetryUtil.executeWithRetry(() -> {
-                    // 每次重试都需要重新查询最新的主账户信息和版本号
-                    Account freshAccount = accountMapper.selectByAccountId(mainAccountId);
-                    int updated = accountMapper.updateBalanceWithVersion(
-                            mainAccountId, shard.getBalance(),
-                            freshAccount.getVersion(), LocalDateTime.now());
-                    if (updated == 0) {
-                        throw new BusinessException(ResultCodeEnum.CONCURRENT_UPDATE_FAILED);
+                for (AccountShard shard : shards) {
+                    if (shard.getBalance() == null || shard.getBalance() == 0L) {
+                        continue;
                     }
-                    return null;
-                });
 
-                // 归并成功后重置影子账户余额为0，更新归并状态和时间
-                accountShardMapper.resetBalanceAfterMerge(shard.getShardId(), LocalDateTime.now(), LocalDateTime.now());
-            }
+                    totalAmount += shard.getBalance();
 
-            // 清除分片缓存，确保下次路由获取最新状态
-            String cacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + mainAccountId;
-            redissonClient.getBucket(cacheKey).delete();
+                    accountShardMapper.updateMergeStatus(shard.getShardId(), 1, LocalDateTime.now());
 
-            log.info("影子账户归并完成, mainAccountId: {}, 归并金额: {}分", mainAccountId, totalAmount);
-            return totalAmount;
+                    try {
+                        RetryUtil.executeWithRetry(() -> {
+                            Account freshAccount = accountMapper.selectByAccountId(mainAccountId);
+                            int updated = accountMapper.updateBalanceWithVersion(
+                                    mainAccountId, shard.getBalance(),
+                                    freshAccount.getVersion(), LocalDateTime.now());
+                            if (updated == 0) {
+                                prometheusConfig.recordHotAccountConflict();
+                                throw new BusinessException(ResultCodeEnum.CONCURRENT_UPDATE_FAILED);
+                            }
+                            return null;
+                        });
+                    } catch (Exception e) {
+                        prometheusConfig.recordHotAccountConflict();
+                        throw e;
+                    }
+
+                    accountShardMapper.resetBalanceAfterMerge(shard.getShardId(), LocalDateTime.now(), LocalDateTime.now());
+                }
+
+                String cacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + mainAccountId;
+                redissonClient.getBucket(cacheKey).delete();
+
+                log.info("影子账户归并完成, mainAccountId: {}, 归并金额: {}分", mainAccountId, totalAmount);
+                return totalAmount;
+            });
         });
+        return result[0];
     }
 
     @Override

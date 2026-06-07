@@ -1,0 +1,71 @@
+global:
+  resolve_timeout: 5m
+  smtp_smarthost: 'smtp.example.com:587'
+  smtp_from: 'alert@core-ledger.com'
+  smtp_auth_username: 'alert@core-ledger.com'
+  smtp_auth_password: 'password'
+
+route:
+  group_by: ['alertname', 'category', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'default-receiver'
+  routes:
+    - match:
+        severity: critical
+      receiver: 'critical-receiver'
+      continue: true
+    - match:
+        category: account
+      receiver: 'account-receiver'
+    - match:
+        category: transaction
+      receiver: 'transaction-receiver'
+    - match:
+        category: mq
+      receiver: 'mq-receiver'
+    - match:
+        category: performance
+      receiver: 'performance-receiver'
+
+receivers:
+  - name: 'default-receiver'
+    email_configs:
+      - to: 'devops@core-ledger.com'
+        send_resolved: true
+
+  - name: 'critical-receiver'
+    email_configs:
+      - to: 'oncall@core-ledger.com'
+        send_resolved: true
+    webhook_configs:
+      - url: 'http://dingtalk-webhook-url/robot/send'
+        send_resolved: true
+
+  - name: 'account-receiver'
+    email_configs:
+      - to: 'account-team@core-ledger.com'
+        send_resolved: true
+
+  - name: 'transaction-receiver'
+    email_configs:
+      - to: 'transaction-team@core-ledger.com'
+        send_resolved: true
+
+  - name: 'mq-receiver'
+    email_configs:
+      - to: 'mq-team@core-ledger.com'
+        send_resolved: true
+
+  - name: 'performance-receiver'
+    email_configs:
+      - to: 'performance-team@core-ledger.com'
+        send_resolved: true
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'category']

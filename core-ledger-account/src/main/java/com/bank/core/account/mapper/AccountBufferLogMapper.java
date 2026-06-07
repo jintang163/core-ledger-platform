@@ -144,4 +144,22 @@ public interface AccountBufferLogMapper extends BaseMapper<AccountBufferLog> {
     @Select("SELECT COALESCE(SUM(amount_fen), 0) FROM t_account_buffer_log " +
             "WHERE account_id = #{accountId} AND status IN (0, 1) AND deleted = 0")
     Long sumPendingAmountByAccountId(@Param("accountId") String accountId);
+
+    /**
+     * 统计待处理的缓冲流水数量
+     * 用于监控消息堆积情况
+     *
+     * @return 待处理流水数量
+     */
+    @Select("SELECT COUNT(*) FROM t_account_buffer_log WHERE status IN (0, 1) AND deleted = 0")
+    long countPendingLogs();
+
+    /**
+     * 统计处理失败的缓冲流水数量
+     * 用于监控告警
+     *
+     * @return 失败流水数量
+     */
+    @Select("SELECT COUNT(*) FROM t_account_buffer_log WHERE status = 3 AND deleted = 0")
+    long countFailedLogs();
 }

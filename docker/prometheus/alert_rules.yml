@@ -1,0 +1,112 @@
+groups:
+  - name: account-alerts
+    rules:
+      - alert: NegativeBalanceAccount
+        expr: account_negative_balance_count > 0
+        for: 1m
+        labels:
+          severity: critical
+          category: account
+        annotations:
+          summary: "检测到余额为负数的账户"
+          description: "当前有 {{ $value }} 个账户余额为负数，需要立即处理"
+          value: "{{ $value }}"
+
+      - alert: AccountFrozenAbnormal
+        expr: increase(account_frozen_exception_count[1h]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          category: account
+        annotations:
+          summary: "账户冻结操作异常"
+          description: "过去1小时内账户冻结异常次数超过5次，当前值: {{ $value }}"
+          value: "{{ $value }}"
+
+      - alert: DistributedTransactionTimeout
+        expr: increase(distributed_transaction_timeout_count[10m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+          category: transaction
+        annotations:
+          summary: "分布式事务超时严重"
+          description: "过去10分钟内分布式事务超时次数超过3次，当前值: {{ $value }}"
+          value: "{{ $value }}"
+
+      - alert: MessageQueueLag
+        expr: message_queue_lag > 1000
+        for: 5m
+        labels:
+          severity: warning
+          category: mq
+        annotations:
+          summary: "消息队列堆积严重"
+          description: "缓冲记账流水堆积超过1000条，当前堆积量: {{ $value }}"
+          value: "{{ $value }}"
+
+      - alert: HighTransactionFailureRate
+        expr: rate(transaction_failure_total[5m]) / rate(transaction_request_total[5m]) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+          category: transaction
+        annotations:
+          summary: "交易失败率过高"
+          description: "过去5分钟交易失败率超过5%，当前失败率: {{ $value | humanizePercentage }}"
+          value: "{{ $value | humanizePercentage }}"
+
+      - alert: HighHotAccountConflict
+        expr: rate(hot_account_conflict_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "热点账户并发冲突过高"
+          description: "过去5分钟热点账户并发冲突次数超过10次/秒，当前值: {{ $value }}"
+          value: "{{ $value }}"
+
+      - alert: HighTransactionLatency
+        expr: histogram_quantile(0.95, rate(transaction_latency_seconds_bucket[5m])) > 3
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "交易延迟过高（P95）"
+          description: "过去5分钟交易P95延迟超过3秒，当前值: {{ $value }}s"
+          value: "{{ $value }}s"
+
+      - alert: HighTransferLatency
+        expr: histogram_quantile(0.95, rate(transfer_latency_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "转账延迟过高（P95）"
+          description: "过去5分钟转账P95延迟超过5秒，当前值: {{ $value }}s"
+          value: "{{ $value }}s"
+
+      - alert: HighDistributedTransactionFailureRate
+        expr: rate(distributed_transaction_failure_total[5m]) / (rate(distributed_transaction_success_total[5m]) + rate(distributed_transaction_failure_total[5m])) > 0.03
+        for: 5m
+        labels:
+          severity: critical
+          category: transaction
+        annotations:
+          summary: "分布式事务失败率过高"
+          description: "过去5分钟分布式事务失败率超过3%，当前失败率: {{ $value | humanizePercentage }}"
+          value: "{{ $value | humanizePercentage }}"
+
+      - alert: BufferAccountingFailed
+        expr: increase(account_buffer_log_failed_total[1h]) > 0
+        for: 1m
+        labels:
+          severity: warning
+          category: mq
+        annotations:
+          summary: "缓冲记账处理失败"
+          description: "过去1小时内有缓冲记账处理失败，失败数量: {{ $value }}"
+          value: "{{ $value }}"

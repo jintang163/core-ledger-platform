@@ -3,6 +3,7 @@ package com.bank.core.account.service.impl;
 import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.bank.core.account.config.HotAccountConfig;
+import com.bank.core.account.config.PrometheusConfig;
 import com.bank.core.account.entity.Account;
 import com.bank.core.account.entity.AccountShard;
 import com.bank.core.account.entity.Transaction;
@@ -79,6 +80,9 @@ public class TransactionServiceImpl implements TransactionService {
     /** 热点账户配置 - 控制各项高并发功能的启用/禁用 */
     private final HotAccountConfig hotAccountConfig;
 
+    /** Prometheus 监控配置 - 用于记录各种指标 */
+    private final PrometheusConfig prometheusConfig;
+
     /**
      * 创建交易（记账）
      * 
@@ -108,6 +112,28 @@ public class TransactionServiceImpl implements TransactionService {
     public TransactionVO createTransaction(TransactionCreateDTO dto) {
         log.info("开始记账, businessNo: {}, transactionType: {}", dto.getBusinessNo(), dto.getTransactionType());
 
+        prometheusConfig.recordTransactionQps();
+        prometheusConfig.recordTransactionAmount(dto.getTotalAmount());
+
+        return prometheusConfig.recordTransactionLatency(() -> {
+            try {
+                TransactionVO result = doCreateTransaction(dto);
+                prometheusConfig.recordTransactionSuccess();
+                prometheusConfig.recordDistributedTransactionSuccess();
+                return result;
+            } catch (Exception e) {
+                prometheusConfig.recordTransactionFailure();
+                prometheusConfig.recordDistributedTransactionFailure();
+                if (e instanceof BusinessException &&
+                        ResultCodeEnum.CONCURRENT_UPDATE_FAILED.getCode().equals(((BusinessException) e).getCode())) {
+                    prometheusConfig.recordHotAccountConflict();
+                }
+                throw e;
+            }
+        });
+    }
+
+    private TransactionVO doCreateTransaction(TransactionCreateDTO dto) {
         // ============================================================
         // 1. 参数基础校验
         // ============================================================

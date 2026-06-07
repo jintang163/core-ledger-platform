@@ -6,9 +6,10 @@ global:
 alerting:
   alertmanagers:
     - static_configs:
-        - targets: []
+        - targets: ['alertmanager:9093']
 
-rule_files: []
+rule_files:
+  - "alert_rules.yml"
 
 scrape_configs:
   - job_name: 'prometheus'
@@ -34,3 +35,18 @@ scrape_configs:
   - job_name: 'redis'
     static_configs:
       - targets: ['redis:9121']
+
+  - job_name: 'seata'
+    metrics_path: '/seata/metrics'
+    static_configs:
+      - targets: ['seata:9848']
+
+  - job_name: 'rocketmq'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['rocketmq-broker:5557']
+
+  - job_name: 'skywalking'
+    metrics_path: '/v3/metrics'
+    static_configs:
+      - targets: ['skywalking-oap:1234']

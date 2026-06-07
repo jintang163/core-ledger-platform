@@ -41,6 +41,8 @@
         <validation.version>2.0.1.Final</validation.version>
         <knife4j.version>3.0.3</knife4j.version>
         <swagger.version>1.6.2</swagger.version>
+        <skywalking.version>8.11.0</skywalking.version>
+        <spring-cloud-sleuth.version>3.0.4</spring-cloud-sleuth.version>
     </properties>
 
     <dependencyManagement>
@@ -170,6 +172,26 @@
                 <groupId>com.bank.core</groupId>
                 <artifactId>core-ledger-api</artifactId>
                 <version>${project.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.springframework.cloud</groupId>
+                <artifactId>spring-cloud-sleuth-dependencies</artifactId>
+                <version>${spring-cloud-sleuth.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.skywalking</groupId>
+                <artifactId>apm-toolkit-trace</artifactId>
+                <version>${skywalking.version}</version>
+            </dependency>
+
+            <dependency>
+                <groupId>org.apache.skywalking</groupId>
+                <artifactId>apm-toolkit-logback-1.x</artifactId>
+                <version>${skywalking.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

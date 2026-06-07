@@ -119,11 +119,14 @@ services:
       - "9090:9090"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
       - ./prometheus/data:/prometheus
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.path=/prometheus
       - --web.enable-lifecycle
+    depends_on:
+      - alertmanager
     restart: unless-stopped
     networks:
       - core-ledger-net
@@ -140,6 +143,99 @@ services:
       - ./grafana/data:/var/lib/grafana
     depends_on:
       - prometheus
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  alertmanager:
+    image: prom/alertmanager:v0.24.0
+    container_name: core-ledger-alertmanager
+    environment:
+      TZ: Asia/Shanghai
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./alertmanager/data:/alertmanager
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+      - --web.listen-address=:9093
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  skywalking-oap:
+    image: apache/skywalking-oap-server:8.11.0
+    container_name: core-ledger-skywalking-oap
+    environment:
+      TZ: Asia/Shanghai
+      SW_STORAGE: elasticsearch
+      SW_STORAGE_ES_CLUSTER_NODES: elasticsearch:9200
+    ports:
+      - "11800:11800"
+      - "12800:12800"
+    depends_on:
+      - elasticsearch
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  skywalking-ui:
+    image: apache/skywalking-ui:8.11.0
+    container_name: core-ledger-skywalking-ui
+    environment:
+      TZ: Asia/Shanghai
+      SW_OAP_ADDRESS: http://skywalking-oap:12800
+    ports:
+      - "8080:8080"
+    depends_on:
+      - skywalking-oap
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  elasticsearch:
+    image: elasticsearch:7.17.4
+    container_name: core-ledger-elasticsearch
+    environment:
+      TZ: Asia/Shanghai
+      discovery.type: single-node
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      xpack.security.enabled: "false"
+    ports:
+      - "9200:9200"
+    volumes:
+      - ./elasticsearch/data:/usr/share/elasticsearch/data
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  mysqld-exporter:
+    image: prom/mysqld-exporter:v0.14.0
+    container_name: core-ledger-mysqld-exporter
+    environment:
+      TZ: Asia/Shanghai
+      DATA_SOURCE_NAME: root:root123@(mysql:3306)/core_ledger
+    ports:
+      - "9104:9104"
+    depends_on:
+      - mysql
+    restart: unless-stopped
+    networks:
+      - core-ledger-net
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.45.0
+    container_name: core-ledger-redis-exporter
+    environment:
+      TZ: Asia/Shanghai
+      REDIS_ADDR: redis://redis:6379
+      REDIS_PASSWORD: redis123
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis
     restart: unless-stopped
     networks:
       - core-ledger-net
@@ -164,15 +260,28 @@ services:
       REDIS_PASSWORD: redis123
       ROCKETMQ_NAMESRV: rocketmq-namesrv:9876
       SEATA_SERVER: seata-server:8091
+      SKYWALKING_COLLECTOR_ADDRESS: skywalking-oap:11800
+      SKYWALKING_AGENT_SERVICE_NAME: core-ledger-account
+      JAVA_OPTS: >
+        -javaagent:/skywalking-agent/skywalking-agent.jar
+        -DSW_AGENT_NAME=core-ledger-account
+        -DSW_COLLECTOR_BACKEND_SERVICES=skywalking-oap:11800
+        -DSW_LOGGING_FILE_NAME=skywalking-api.log
+        -DSW_LOGGING_LEVEL=INFO
+        -DSW_LOGGING_DIR=/logs/skywalking
     ports:
       - "8081:8081"
       - "20881:20881"
+    volumes:
+      - ./skywalking/agent:/skywalking-agent
+      - ./skywalking/logs:/logs/skywalking
     depends_on:
       - mysql
       - nacos
       - redis
       - rocketmq-broker
       - seata-server
+      - skywalking-oap
     restart: unless-stopped
     networks:
       - core-ledger-net

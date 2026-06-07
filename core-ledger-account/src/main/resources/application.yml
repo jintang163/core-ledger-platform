@@ -59,12 +59,46 @@ management:
       prometheus:
         enabled: true
         step: 1m
+    web:
+      server:
+        request:
+          autotime:
+            enabled: true
+            percentiles: 0.5, 0.9, 0.95, 0.99
+
+spring:
+  sleuth:
+    enabled: true
+    sampler:
+      probability: 1.0
+    web:
+      skip-pattern: (^/actuator.*|^/swagger.*|^/v2/api-docs.*|^/doc.html.*)
+    async:
+      enabled: true
+    scheduled:
+      enabled: true
+    log:
+      slf4j:
+        whitelisted-mdc-keys: traceId,spanId,transactionId,globalTxId
+
+skywalking:
+  plugin:
+    seata:
+      enabled: true
+    dubbo:
+      enabled: true
+    springmvc:
+      enabled: true
+    mybatis:
+      enabled: true
 
 logging:
   level:
     root: INFO
     com.bank.core: DEBUG
-
     org.apache.shardingsphere: INFO
+    org.springframework.cloud.sleuth: DEBUG
+    brave: INFO
   pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} - %msg%n"
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} [traceId=%X{traceId:-}, spanId=%X{spanId:-}, txId=%X{transactionId:-}, gTxId=%X{globalTxId:-}] - %msg%n"
+    file: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{50} [traceId=%X{traceId:-}, spanId=%X{spanId:-}, txId=%X{transactionId:-}, gTxId=%X{globalTxId:-}] - %msg%n"

@@ -11,6 +11,7 @@ import com.bank.core.api.dto.TransferDTO;
 import com.bank.core.api.dto.TransferQueryDTO;
 import com.bank.core.api.dto.TransactionCreateDTO;
 import com.bank.core.api.dto.TransactionEntryDTO;
+import com.bank.core.account.config.PrometheusConfig;
 import com.bank.core.api.event.AccountEvent;
 import com.bank.core.api.vo.TransferOrderVO;
 import com.bank.core.common.constants.CommonConstants;
@@ -62,6 +63,7 @@ public class TransferServiceImpl implements TransferService {
     private final TransactionServiceImpl transactionService;
     private final RedissonClient redissonClient;
     private final RocketMQTemplate rocketMQTemplate;
+    private final PrometheusConfig prometheusConfig;
 
     /**
      * 账户间转账
@@ -89,7 +91,31 @@ public class TransferServiceImpl implements TransferService {
         log.info("开始账户间转账, businessNo: {}, fromAccountId: {}, toAccountId: {}, amount: {}",
                 dto.getBusinessNo(), dto.getFromAccountId(), dto.getToAccountId(), dto.getAmount());
 
-        IdempotentUtil.checkIdempotent(dto.getRequestId());
+        return prometheusConfig.recordTransferLatency(() -> {
+            try {
+                IdempotentUtil.checkIdempotent(dto.getRequestId());
+                TransferOrderVO result = doTransfer(dto);
+                prometheusConfig.recordTransactionSuccess();
+                prometheusConfig.recordDistributedTransactionSuccess();
+                return result;
+            } catch (Exception e) {
+                prometheusConfig.recordTransactionFailure();
+                prometheusConfig.recordDistributedTransactionFailure();
+                if (e instanceof BusinessException) {
+                    BusinessException be = (BusinessException) e;
+                    if (ResultCodeEnum.CONCURRENT_UPDATE_FAILED.getCode().equals(be.getCode())) {
+                        prometheusConfig.recordHotAccountConflict();
+                    }
+                    if (ResultCodeEnum.ACCOUNT_FROZEN.getCode().equals(be.getCode())) {
+                        prometheusConfig.incrementFrozenAccountExceptions();
+                    }
+                }
+                throw e;
+            }
+        });
+    }
+
+    private TransferOrderVO doTransfer(TransferDTO dto) {
 
         validateTransferParam(dto);
 

@@ -177,4 +177,23 @@ public interface AccountMapper extends BaseMapper<Account> {
      */
     @Select("SELECT * FROM t_account WHERE hot_status IN (2, 3) AND deleted = 0")
     List<Account> selectAllHotAccounts();
+
+    /**
+     * 统计余额为负数的账户数量
+     * 用于监控告警
+     *
+     * @return 负数余额账户数量
+     */
+    @Select("SELECT COUNT(*) FROM t_account WHERE balance < 0 AND deleted = 0")
+    long countNegativeBalanceAccounts();
+
+    /**
+     * 查询异常冻结的账户
+     * 冻结时间超过指定阈值的账户
+     *
+     * @param maxFreezeHours 最大冻结小时数
+     * @return 异常冻结账户列表
+     */
+    @Select("SELECT * FROM t_account WHERE status = 1 AND freeze_time < #{freezeTime} AND deleted = 0")
+    List<Account> selectAbnormalFrozenAccounts(@Param("freezeTime") LocalDateTime freezeTime);
 }
