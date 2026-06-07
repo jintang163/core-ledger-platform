@@ -22,9 +22,23 @@ import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 冻结TCC实现类
+ * 
+ * 执行流程：
+ * 1. Try阶段：冻结账户指定金额，创建冻结日志
+ * 2. Confirm阶段：正式冻结，更新账户状态为冻结
+ * 3. Cancel阶段：解冻资金，创建解冻日志，恢复账户状态
+ * 
+ * 关键设计：
+ * - 使用@BusinessActionContextParameter传递参数到二阶段
+ * - Confirm/Cancel从Seata持久化上下文恢复参数
+ * - 统一Redis key = tcc:freeze:context:{xid}:{branchId} 存储上下文
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -36,12 +50,18 @@ public class FreezeTccActionImpl implements FreezeTccAction {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public boolean tryFreeze(BusinessActionContext context, AccountFreezeDTO dto) {
+    public boolean tryFreeze(
+            BusinessActionContext context,
+            String accountId,
+            BigDecimal amount,
+            AccountFreezeDTO dto) {
+        
         String xid = RootContext.getXID();
+        String branchId = context.getBranchId() != null ? String.valueOf(context.getBranchId()) : accountId;
         String businessNo = dto.getBusinessNo() != null ? dto.getBusinessNo() : dto.getRequestId();
         
-        log.info("TCC Try阶段-冻结, xid={}, accountId={}, freezeType={}, amount={}",
-                xid, dto.getAccountId(), dto.getFreezeType(), dto.getAmount());
+        log.info("TCC Try阶段-冻结, xid={}, branchId={}, accountId={}, freezeType={}, amount={}",
+                xid, branchId, accountId, dto.getFreezeType(), amount);
 
         String tryLockKey = "tcc:freeze:try:lock:" + businessNo;
         RBucket<Boolean> tryLockBucket = redissonClient.getBucket(tryLockKey);
@@ -50,7 +70,7 @@ public class FreezeTccActionImpl implements FreezeTccAction {
             return true;
         }
 
-        Account account = accountMapper.selectByAccountId(dto.getAccountId());
+        Account account = accountMapper.selectByAccountId(accountId);
         if (account == null) {
             throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
         }
@@ -64,15 +84,15 @@ public class FreezeTccActionImpl implements FreezeTccAction {
         }
 
         Long amountFen = 0L;
-        if (dto.getAmount() != null) {
-            amountFen = AmountUtil.yuanToFen(dto.getAmount());
-            Account freshAccount = accountMapper.selectByAccountId(dto.getAccountId());
+        if (amount != null) {
+            amountFen = AmountUtil.yuanToFen(amount);
+            Account freshAccount = accountMapper.selectByAccountId(accountId);
             if (freshAccount.getBalance() < amountFen) {
                 throw new BusinessException(ResultCodeEnum.INSUFFICIENT_BALANCE, "可冻结余额不足");
             }
 
             int updated = accountMapper.freezeBalance(
-                    dto.getAccountId(),
+                    accountId,
                     amountFen,
                     freshAccount.getVersion(),
                     LocalDateTime.now()
@@ -87,7 +107,7 @@ public class FreezeTccActionImpl implements FreezeTccAction {
         AccountFreezeLog freezeLog = new AccountFreezeLog();
         freezeLog.setId(SnowflakeIdGenerator.nextId());
         freezeLog.setLogId(freezeLogId);
-        freezeLog.setAccountId(dto.getAccountId());
+        freezeLog.setAccountId(accountId);
         freezeLog.setOperateType(1);
         freezeLog.setFreezeType(dto.getFreezeType());
         freezeLog.setRemark(dto.getRemark());
@@ -96,11 +116,13 @@ public class FreezeTccActionImpl implements FreezeTccAction {
         freezeLog.setCreateTime(LocalDateTime.now());
         freezeLogMapper.insert(freezeLog);
 
+        String contextKey = buildContextKey(xid, branchId);
         TccTransactionContext ctx = new TccTransactionContext();
         ctx.setXid(xid);
+        ctx.setBranchId(branchId);
         ctx.setBusinessNo(businessNo);
-        ctx.setAccountId(dto.getAccountId());
-        ctx.setAmount(dto.getAmount());
+        ctx.setAccountId(accountId);
+        ctx.setAmount(amount);
         ctx.setAmountFen(amountFen);
         ctx.setCurrency(dto.getCurrency());
         ctx.setFreezeType(dto.getFreezeType());
@@ -108,14 +130,14 @@ public class FreezeTccActionImpl implements FreezeTccAction {
         ctx.setPhase(TransactionPhaseEnum.TRY.getCode());
         ctx.setCreateTime(LocalDateTime.now());
 
-        String contextKey = "tcc:freeze:context:" + xid + ":" + businessNo;
         redissonClient.getBucket(contextKey).set(JSON.toJSONString(ctx), 24, TimeUnit.HOURS);
 
         context.getActionContext().put("contextKey", contextKey);
         context.getActionContext().put("freezeLogId", freezeLogId);
         context.getActionContext().put("amountFen", amountFen);
 
-        log.info("TCC Try阶段-冻结完成, xid={}, freezeLogId={}, 冻结金额={}分", xid, freezeLogId, amountFen);
+        log.info("TCC Try阶段-冻结完成, xid={}, freezeLogId={}, 冻结金额={}分, contextKey={}",
+                xid, freezeLogId, amountFen, contextKey);
         return true;
     }
 
@@ -123,9 +145,10 @@ public class FreezeTccActionImpl implements FreezeTccAction {
     @Transactional(rollbackFor = Exception.class)
     public boolean confirm(BusinessActionContext context) {
         String xid = context.getXid();
+        String branchId = context.getBranchId() != null ? String.valueOf(context.getBranchId()) : "";
         String freezeLogId = (String) context.getActionContext().get("freezeLogId");
         
-        log.info("TCC Confirm阶段-冻结, xid={}, freezeLogId={}", xid, freezeLogId);
+        log.info("TCC Confirm阶段-冻结, xid={}, branchId={}, freezeLogId={}", xid, branchId, freezeLogId);
 
         String confirmLockKey = "tcc:freeze:confirm:lock:" + freezeLogId;
         RBucket<Boolean> confirmLockBucket = redissonClient.getBucket(confirmLockKey);
@@ -135,11 +158,13 @@ public class FreezeTccActionImpl implements FreezeTccAction {
         }
 
         String contextKey = (String) context.getActionContext().get("contextKey");
-        String contextJson = (String) redissonClient.getBucket(contextKey).get();
-        TccTransactionContext ctx = JSON.parseObject(contextJson, TccTransactionContext.class);
+        if (contextKey == null) {
+            contextKey = buildContextKey(xid, branchId);
+        }
 
+        TccTransactionContext ctx = loadContext(contextKey);
         if (ctx == null) {
-            log.error("TCC Confirm阶段-上下文不存在, xid={}", xid);
+            log.error("TCC Confirm阶段-上下文不存在, xid={}, contextKey={}", xid, contextKey);
             return false;
         }
 
@@ -168,11 +193,12 @@ public class FreezeTccActionImpl implements FreezeTccAction {
     @Transactional(rollbackFor = Exception.class)
     public boolean cancel(BusinessActionContext context) {
         String xid = context.getXid();
+        String branchId = context.getBranchId() != null ? String.valueOf(context.getBranchId()) : "";
         String freezeLogId = (String) context.getActionContext().get("freezeLogId");
         
-        log.info("TCC Cancel阶段-冻结回滚, xid={}, freezeLogId={}", xid, freezeLogId);
+        log.info("TCC Cancel阶段-冻结回滚, xid={}, branchId={}, freezeLogId={}", xid, branchId, freezeLogId);
 
-        String cancelLockKey = "tcc:freeze:cancel:lock:" + freezeLogId;
+        String cancelLockKey = "tcc:freeze:cancel:lock:" + (freezeLogId != null ? freezeLogId : xid);
         RBucket<Boolean> cancelLockBucket = redissonClient.getBucket(cancelLockKey);
         if (!cancelLockBucket.setIfAbsent(true, 5, TimeUnit.MINUTES)) {
             log.warn("TCC Cancel阶段-冻结幂等命中, freezeLogId={}", freezeLogId);
@@ -182,13 +208,19 @@ public class FreezeTccActionImpl implements FreezeTccAction {
         String contextKey = (String) context.getActionContext().get("contextKey");
         Long amountFen = (Long) context.getActionContext().get("amountFen");
 
-        String contextJson = (String) redissonClient.getBucket(contextKey).get();
-        if (contextJson == null) {
+        if (contextKey == null) {
+            contextKey = buildContextKey(xid, branchId);
+        }
+
+        TccTransactionContext ctx = loadContext(contextKey);
+        if (ctx == null) {
             log.warn("TCC Cancel阶段-上下文不存在, 可能Try阶段未执行成功, xid={}", xid);
             return true;
         }
 
-        TccTransactionContext ctx = JSON.parseObject(contextJson, TccTransactionContext.class);
+        if (amountFen == null) {
+            amountFen = ctx.getAmountFen();
+        }
 
         AccountFreezeLog freezeLog = new AccountFreezeLog();
         freezeLog.setId(SnowflakeIdGenerator.nextId());
@@ -219,6 +251,18 @@ public class FreezeTccActionImpl implements FreezeTccAction {
 
         log.info("TCC Cancel阶段-冻结回滚完成, xid={}, accountId={}", xid, ctx.getAccountId());
         return true;
+    }
+
+    private String buildContextKey(String xid, String branchId) {
+        return "tcc:freeze:context:" + xid + ":" + branchId;
+    }
+
+    private TccTransactionContext loadContext(String contextKey) {
+        String contextJson = (String) redissonClient.getBucket(contextKey).get();
+        if (contextJson == null) {
+            return null;
+        }
+        return JSON.parseObject(contextJson, TccTransactionContext.class);
     }
 
     private void deleteAccountCache(String accountId) {

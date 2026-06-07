@@ -22,9 +22,25 @@ import org.redisson.api.RedissonClient;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * 转账TCC实现类
+ * 
+ * 执行流程：
+ * 1. Try阶段：冻结付款方余额，创建冻结状态的转账订单
+ * 2. Confirm阶段：解冻并扣款付款方，入账收款方，更新订单状态为成功
+ * 3. Cancel阶段：解冻付款方余额，更新订单状态为失败
+ * 
+ * 关键设计：
+ * - 使用@BusinessActionContextParameter传递参数到二阶段
+ * - Confirm/Cancel从Seata持久化上下文恢复参数（无需手动传递）
+ * - 统一Redis key = tcc:context:{xid}:{branchId} 存储上下文
+ * - 幂等性：分布式锁+数据库状态双重校验
+ * - 空补偿：检查上下文是否存在，避免Try未执行时Cancel误操作
+ */
 @Slf4j
 @Component
 @RequiredArgsConstructor
@@ -36,12 +52,20 @@ public class TransferTccActionImpl implements TransferTccAction {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public boolean tryTransfer(BusinessActionContext context, TransferDTO dto) {
-        String xid = RootContext.getXID();
-        String businessNo = dto.getBusinessNo();
+    public boolean tryTransfer(
+            BusinessActionContext context,
+            String businessNo,
+            String fromAccountId,
+            String toAccountId,
+            BigDecimal amount,
+            String currency,
+            TransferDTO dto) {
         
-        log.info("TCC Try阶段-转账, xid={}, businessNo={}, from={}, to={}, amount={}",
-                xid, businessNo, dto.getFromAccountId(), dto.getToAccountId(), dto.getAmount());
+        String xid = RootContext.getXID();
+        String branchId = context.getBranchId() != null ? String.valueOf(context.getBranchId()) : businessNo;
+        
+        log.info("TCC Try阶段-转账, xid={}, branchId={}, businessNo={}, from={}, to={}, amount={}",
+                xid, branchId, businessNo, fromAccountId, toAccountId, amount);
 
         String tryLockKey = "tcc:try:lock:" + businessNo;
         RBucket<Boolean> tryLockBucket = redissonClient.getBucket(tryLockKey);
@@ -50,8 +74,8 @@ public class TransferTccActionImpl implements TransferTccAction {
             return true;
         }
 
-        Account fromAccount = accountMapper.selectByAccountId(dto.getFromAccountId());
-        Account toAccount = accountMapper.selectByAccountId(dto.getToAccountId());
+        Account fromAccount = accountMapper.selectByAccountId(fromAccountId);
+        Account toAccount = accountMapper.selectByAccountId(toAccountId);
 
         if (fromAccount == null || toAccount == null) {
             throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
@@ -70,15 +94,15 @@ public class TransferTccActionImpl implements TransferTccAction {
             throw new BusinessException(ResultCodeEnum.TRANSFER_CURRENCY_MISMATCH);
         }
 
-        long amountFen = AmountUtil.yuanToFen(dto.getAmount());
+        long amountFen = AmountUtil.yuanToFen(amount);
         
-        Account freshFrom = accountMapper.selectByAccountId(dto.getFromAccountId());
+        Account freshFrom = accountMapper.selectByAccountId(fromAccountId);
         if (freshFrom.getBalance() < amountFen) {
             throw new BusinessException(ResultCodeEnum.INSUFFICIENT_BALANCE);
         }
 
         int updated = accountMapper.freezeBalance(
-                dto.getFromAccountId(),
+                fromAccountId,
                 amountFen,
                 freshFrom.getVersion(),
                 LocalDateTime.now()
@@ -97,12 +121,12 @@ public class TransferTccActionImpl implements TransferTccAction {
         order.setTransferNo(transferNo);
         order.setBusinessNo(businessNo);
         order.setRequestId(dto.getRequestId());
-        order.setFromAccountId(dto.getFromAccountId());
+        order.setFromAccountId(fromAccountId);
         order.setFromAccountNo(fromAccount.getAccountNo());
-        order.setToAccountId(dto.getToAccountId());
+        order.setToAccountId(toAccountId);
         order.setToAccountNo(toAccount.getAccountNo());
-        order.setAmount(dto.getAmount());
-        order.setCurrency(dto.getCurrency());
+        order.setAmount(amount);
+        order.setCurrency(currency);
         order.setStatus(PaymentStatusEnum.FROZEN.getCode());
         order.setRemark(dto.getRemark());
         order.setOperator(dto.getOperator());
@@ -111,26 +135,28 @@ public class TransferTccActionImpl implements TransferTccAction {
         order.setDeleted(0);
         transferOrderMapper.insert(order);
 
+        String contextKey = buildContextKey(xid, branchId);
         TccTransactionContext ctx = new TccTransactionContext();
         ctx.setXid(xid);
+        ctx.setBranchId(branchId);
         ctx.setBusinessNo(businessNo);
-        ctx.setFromAccountId(dto.getFromAccountId());
-        ctx.setToAccountId(dto.getToAccountId());
-        ctx.setAmount(dto.getAmount());
+        ctx.setFromAccountId(fromAccountId);
+        ctx.setToAccountId(toAccountId);
+        ctx.setAmount(amount);
         ctx.setAmountFen(amountFen);
-        ctx.setCurrency(dto.getCurrency());
+        ctx.setCurrency(currency);
         ctx.setTransferId(transferId);
         ctx.setPhase(TransactionPhaseEnum.TRY.getCode());
         ctx.setCreateTime(LocalDateTime.now());
 
-        String contextKey = "tcc:context:" + xid + ":" + businessNo;
         redissonClient.getBucket(contextKey).set(JSON.toJSONString(ctx), 24, TimeUnit.HOURS);
 
         context.getActionContext().put("contextKey", contextKey);
         context.getActionContext().put("transferId", transferId);
         context.getActionContext().put("amountFen", amountFen);
 
-        log.info("TCC Try阶段-转账完成, xid={}, transferId={}, 冻结金额={}分", xid, transferId, amountFen);
+        log.info("TCC Try阶段-转账完成, xid={}, branchId={}, transferId={}, 冻结金额={}分, contextKey={}",
+                xid, branchId, transferId, amountFen, contextKey);
         return true;
     }
 
@@ -138,9 +164,10 @@ public class TransferTccActionImpl implements TransferTccAction {
     @Transactional(rollbackFor = Exception.class)
     public boolean confirm(BusinessActionContext context) {
         String xid = context.getXid();
+        String branchId = context.getBranchId() != null ? String.valueOf(context.getBranchId()) : "";
         String transferId = (String) context.getActionContext().get("transferId");
         
-        log.info("TCC Confirm阶段-转账, xid={}, transferId={}", xid, transferId);
+        log.info("TCC Confirm阶段-转账, xid={}, branchId={}, transferId={}", xid, branchId, transferId);
 
         String confirmLockKey = "tcc:confirm:lock:" + transferId;
         RBucket<Boolean> confirmLockBucket = redissonClient.getBucket(confirmLockKey);
@@ -152,11 +179,13 @@ public class TransferTccActionImpl implements TransferTccAction {
         String contextKey = (String) context.getActionContext().get("contextKey");
         Long amountFen = (Long) context.getActionContext().get("amountFen");
 
-        String contextJson = (String) redissonClient.getBucket(contextKey).get();
-        TccTransactionContext ctx = JSON.parseObject(contextJson, TccTransactionContext.class);
+        if (contextKey == null) {
+            contextKey = buildContextKey(xid, branchId);
+        }
 
+        TccTransactionContext ctx = loadContext(contextKey);
         if (ctx == null) {
-            log.error("TCC Confirm阶段-上下文不存在, xid={}", xid);
+            log.error("TCC Confirm阶段-上下文不存在, xid={}, branchId={}, contextKey={}", xid, branchId, contextKey);
             return false;
         }
 
@@ -213,11 +242,12 @@ public class TransferTccActionImpl implements TransferTccAction {
     @Transactional(rollbackFor = Exception.class)
     public boolean cancel(BusinessActionContext context) {
         String xid = context.getXid();
+        String branchId = context.getBranchId() != null ? String.valueOf(context.getBranchId()) : "";
         String transferId = (String) context.getActionContext().get("transferId");
         
-        log.info("TCC Cancel阶段-转账回滚, xid={}, transferId={}", xid, transferId);
+        log.info("TCC Cancel阶段-转账回滚, xid={}, branchId={}, transferId={}", xid, branchId, transferId);
 
-        String cancelLockKey = "tcc:cancel:lock:" + transferId;
+        String cancelLockKey = "tcc:cancel:lock:" + (transferId != null ? transferId : xid);
         RBucket<Boolean> cancelLockBucket = redissonClient.getBucket(cancelLockKey);
         if (!cancelLockBucket.setIfAbsent(true, 5, TimeUnit.MINUTES)) {
             log.warn("TCC Cancel阶段-幂等命中, transferId={}", transferId);
@@ -227,17 +257,24 @@ public class TransferTccActionImpl implements TransferTccAction {
         String contextKey = (String) context.getActionContext().get("contextKey");
         Long amountFen = (Long) context.getActionContext().get("amountFen");
 
-        String contextJson = (String) redissonClient.getBucket(contextKey).get();
-        if (contextJson == null) {
-            log.warn("TCC Cancel阶段-上下文不存在, 可能Try阶段未执行成功, xid={}", xid);
+        if (contextKey == null) {
+            contextKey = buildContextKey(xid, branchId);
+        }
+
+        TccTransactionContext ctx = loadContext(contextKey);
+        if (ctx == null) {
+            log.warn("TCC Cancel阶段-上下文不存在, 可能Try阶段未执行成功, xid={}, branchId={}", xid, branchId);
             return true;
         }
 
-        TccTransactionContext ctx = JSON.parseObject(contextJson, TccTransactionContext.class);
+        if (amountFen == null) {
+            amountFen = ctx.getAmountFen();
+        }
 
         if (transferId != null) {
             TransferOrder order = transferOrderMapper.selectByTransferId(transferId);
-            if (order != null && !PaymentStatusEnum.FAILED.getCode().equals(order.getStatus())) {
+            if (order != null && !PaymentStatusEnum.FAILED.getCode().equals(order.getStatus())
+                    && !PaymentStatusEnum.SUCCESS.getCode().equals(order.getStatus())) {
                 order.setStatus(PaymentStatusEnum.FAILED.getCode());
                 order.setUpdateTime(LocalDateTime.now());
                 transferOrderMapper.updateById(order);
@@ -259,6 +296,18 @@ public class TransferTccActionImpl implements TransferTccAction {
 
         log.info("TCC Cancel阶段-转账回滚完成, xid={}, transferId={}", xid, transferId);
         return true;
+    }
+
+    private String buildContextKey(String xid, String branchId) {
+        return "tcc:context:" + xid + ":" + branchId;
+    }
+
+    private TccTransactionContext loadContext(String contextKey) {
+        String contextJson = (String) redissonClient.getBucket(contextKey).get();
+        if (contextJson == null) {
+            return null;
+        }
+        return JSON.parseObject(contextJson, TccTransactionContext.class);
     }
 
     private void deleteAccountCache(String accountId) {

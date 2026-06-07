@@ -944,28 +944,80 @@ public class PaymentServiceImpl implements PaymentService {
             throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "退款金额不能大于原支付金额");
         }
 
-        String sagaId = distributedTransactionService.executeRefundWithSaga(
-                originalPaymentId, refundAccountId, amount, currency, businessNo, operator, remark
-        );
-
-        String refundPaymentId = "REFUND_" + sagaId;
-        PaymentOrder refundOrder = paymentOrderMapper.selectByPaymentId(refundPaymentId);
-        if (refundOrder == null) {
-            refundOrder = new PaymentOrder();
-            refundOrder.setPaymentId(refundPaymentId);
-            refundOrder.setPaymentType(PaymentTypeEnum.REFUND.getCode());
-            refundOrder.setStatus(PaymentStatusEnum.SUCCESS.getCode());
-            refundOrder.setAmount(amount);
-            refundOrder.setCurrency(currency);
+        PaymentOrder existingRefundOrder = paymentOrderMapper.selectByBusinessNo(businessNo);
+        if (existingRefundOrder != null) {
+            log.warn("退款业务单号已存在, businessNo={}, refundPaymentId={}",
+                    businessNo, existingRefundOrder.getPaymentId());
+            PaymentOrderVO vo = convertPaymentOrderToVO(existingRefundOrder);
+            vo.setRemark("退款已提交，Saga事务ID: " + existingRefundOrder.getRemark());
+            return vo;
         }
 
-        PaymentOrderVO vo = new PaymentOrderVO();
-        org.springframework.beans.BeanUtils.copyProperties(refundOrder, vo);
-        vo.setPaymentTypeDesc(PaymentTypeEnum.REFUND.getDesc());
-        vo.setStatusDesc(PaymentStatusEnum.SUCCESS.getDesc());
+        String refundPaymentId = "REFUND_" + com.bank.core.common.utils.SnowflakeIdGenerator.nextIdStr();
+        log.info("创建退款订单, refundPaymentId={}, originalPaymentId={}", refundPaymentId, originalPaymentId);
 
-        log.info("原路退款完成, sagaId={}, originalPaymentId={}, amount={}", sagaId, originalPaymentId, amount);
+        PaymentOrder refundOrder = new PaymentOrder();
+        refundOrder.setId(com.bank.core.common.utils.SnowflakeIdGenerator.nextId());
+        refundOrder.setPaymentId(refundPaymentId);
+        refundOrder.setRequestId(originalOrder.getRequestId());
+        refundOrder.setBusinessNo(businessNo);
+        refundOrder.setPayerAccountId(originalOrder.getPayeeAccountId());
+        refundOrder.setPayeeAccountId(refundAccountId);
+        refundOrder.setPaymentType(PaymentTypeEnum.REFUND.getCode());
+        refundOrder.setAmount(amount);
+        refundOrder.setCurrency(currency);
+        refundOrder.setStatus(PaymentStatusEnum.PROCESSING.getCode());
+        refundOrder.setChannelCode(originalOrder.getChannelCode());
+        refundOrder.setOriginalPaymentId(originalPaymentId);
+        refundOrder.setOperator(operator);
+        refundOrder.setRemark(remark);
+        refundOrder.setCreateTime(java.time.LocalDateTime.now());
+        refundOrder.setUpdateTime(java.time.LocalDateTime.now());
+        refundOrder.setDeleted(0);
+        paymentOrderMapper.insert(refundOrder);
+
+        String sagaId;
+        try {
+            sagaId = distributedTransactionService.executeRefundWithSaga(
+                    originalPaymentId, refundAccountId, amount, currency, businessNo, operator, remark
+            );
+        } catch (Exception e) {
+            log.error("退款Saga执行失败, refundPaymentId={}, originalPaymentId={}",
+                    refundPaymentId, originalPaymentId, e);
+            refundOrder.setStatus(PaymentStatusEnum.FAILED.getCode());
+            refundOrder.setRemark("退款失败: " + e.getMessage());
+            refundOrder.setUpdateTime(java.time.LocalDateTime.now());
+            paymentOrderMapper.updateById(refundOrder);
+            throw e;
+        }
+
+        refundOrder.setStatus(PaymentStatusEnum.SUCCESS.getCode());
+        refundOrder.setPaymentTime(java.time.LocalDateTime.now());
+        refundOrder.setRemark("Saga事务ID: " + sagaId + (remark != null ? ", " + remark : ""));
+        refundOrder.setUpdateTime(java.time.LocalDateTime.now());
+        paymentOrderMapper.updateById(refundOrder);
+
+        log.info("原路退款处理完成, refundPaymentId={}, sagaId={}, originalPaymentId={}, amount={}",
+                refundPaymentId, sagaId, originalPaymentId, amount);
+
+        PaymentOrderVO vo = convertPaymentOrderToVO(refundOrder);
+        vo.setSagaId(sagaId);
+        vo.setOriginalPaymentId(originalPaymentId);
+        vo.setRemark("退款已提交，Saga事务ID: " + sagaId);
         return vo;
+    }
+
+    @Override
+    public PaymentOrderVO refund(com.bank.core.api.dto.RefundDTO dto) {
+        return refund(
+                dto.getOriginalPaymentId(),
+                dto.getRefundAccountId(),
+                dto.getAmount(),
+                dto.getCurrency(),
+                dto.getBusinessNo(),
+                dto.getOperator(),
+                dto.getRemark()
+        );
     }
 
     private void deleteAccountCache(String accountId) {

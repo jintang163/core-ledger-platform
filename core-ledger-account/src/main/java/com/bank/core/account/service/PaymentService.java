@@ -24,4 +24,6 @@ public interface PaymentService {
     PaymentOrderVO refund(String originalPaymentId, String refundAccountId,
                            java.math.BigDecimal amount, String currency,
                            String businessNo, String operator, String remark);
+
+    PaymentOrderVO refund(com.bank.core.api.dto.RefundDTO dto);
 }

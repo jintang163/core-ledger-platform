@@ -5,6 +5,7 @@ import com.bank.core.account.service.PaymentService;
 import com.bank.core.api.dto.PaymentCallbackDTO;
 import com.bank.core.api.dto.PaymentQueryDTO;
 import com.bank.core.api.dto.RechargeDTO;
+import com.bank.core.api.dto.RefundDTO;
 import com.bank.core.api.dto.WithdrawDTO;
 import com.bank.core.api.vo.PaymentOrderVO;
 import com.bank.core.common.result.Result;
@@ -186,5 +187,38 @@ public class PaymentController {
                 dto.getAccountId(), dto.getPaymentType(), dto.getStatus());
         Page<PaymentOrderVO> page = paymentService.queryPaymentOrders(dto);
         return Result.success(page);
+    }
+
+    /**
+     * 原路退款 - Saga模式
+     * 
+     * 业务流程：
+     * 1. 创建退款订单（状态：处理中）
+     * 2. 调用渠道接口执行退款
+     * 3. 清算记账
+     * 4. 用户账户入账
+     * 
+     * 失败时自动逆向补偿，支持事务日志重试
+     *
+     * @param dto 退款请求参数
+     * @return 退款订单信息
+     */
+    @PostMapping("/refund")
+    @ApiOperation("原路退款（Saga模式）")
+    @Timed(value = "payment.refund.duration", description = "退款请求耗时")
+    public Result<PaymentOrderVO> refund(@RequestBody @Valid RefundDTO dto) {
+        log.info("接收到退款请求, originalPaymentId: {}, refundAccountId: {}, amount: {}, businessNo: {}",
+                dto.getOriginalPaymentId(), dto.getRefundAccountId(), dto.getAmount(), dto.getBusinessNo());
+
+        PaymentOrderVO vo = paymentService.refund(
+                dto.getOriginalPaymentId(),
+                dto.getRefundAccountId(),
+                dto.getAmount(),
+                dto.getCurrency(),
+                dto.getBusinessNo(),
+                dto.getOperator(),
+                dto.getRemark()
+        );
+        return Result.success(vo);
     }
 }

@@ -89,9 +89,17 @@ public class TransferServiceImpl implements TransferService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public TransferOrderVO transfer(TransferDTO dto) {
-        log.info("开始账户间转账, businessNo: {}, fromAccountId: {}, toAccountId: {}, amount: {}",
-                dto.getBusinessNo(), dto.getFromAccountId(), dto.getToAccountId(), dto.getAmount());
+        log.info("开始账户间转账, businessNo: {}, fromAccountId: {}, toAccountId: {}, amount: {}, useTcc: {}",
+                dto.getBusinessNo(), dto.getFromAccountId(), dto.getToAccountId(), dto.getAmount(),
+                dto.getDistributedTxType());
 
+        if (dto.getDistributedTxType() != null
+                && DistributedTransactionTypeEnum.TCC.getCode().equals(dto.getDistributedTxType())) {
+            log.info("使用TCC模式执行行内转账, businessNo: {}", dto.getBusinessNo());
+            return transferWithTcc(dto);
+        }
+
+        log.info("使用传统AT模式执行行内转账, businessNo: {}", dto.getBusinessNo());
         return prometheusConfig.recordTransferLatency(() -> {
             try {
                 IdempotentUtil.checkIdempotent(dto.getRequestId());
@@ -114,6 +122,28 @@ public class TransferServiceImpl implements TransferService {
                 throw e;
             }
         });
+    }
+
+    /**
+     * 行内转账 - TCC模式
+     * 通过分布式事务服务调用TCC接口
+     */
+    private TransferOrderVO transferWithTcc(TransferDTO dto) {
+        log.info("行内转账-TCC模式, businessNo: {}", dto.getBusinessNo());
+
+        String xid = distributedTransactionService.transferWithTcc(dto);
+
+        TransferOrder order = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+        if (order == null) {
+            throw new BusinessException(ResultCodeEnum.TRANSFER_ORDER_NOT_EXIST, "TCC转账订单不存在");
+        }
+
+        TransferOrderVO vo = convertToVO(order);
+        vo.setRemark("TCC转账处理完成，全局事务ID: " + xid);
+
+        log.info("行内转账-TCC模式完成, businessNo: {}, xid: {}, transferId: {}",
+                dto.getBusinessNo(), xid, order.getTransferId());
+        return vo;
     }
 
     private TransferOrderVO doTransfer(TransferDTO dto) {

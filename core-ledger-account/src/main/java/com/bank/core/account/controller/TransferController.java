@@ -135,4 +135,34 @@ public class TransferController {
         Page<TransferOrderVO> page = transferService.queryTransferOrders(dto);
         return Result.success(page);
     }
+
+    /**
+     * 跨行转账 - Saga模式
+     * 
+     * 业务流程：
+     * 1. 冻结付款方资金
+     * 2. 调用渠道接口出款
+     * 3. 清算记账
+     * 4. 解冻扣款并给收款方入账
+     * 
+     * 失败时自动逆向补偿，支持事务日志重试
+     *
+     * @param dto 跨行转账请求参数，必须包含channelCode
+     * @return 转账订单信息
+     */
+    @PostMapping("/cross-bank")
+    @ApiOperation("跨行转账（Saga模式）")
+    @Timed(value = "transfer.crossbank.duration", description = "跨行转账请求耗时")
+    public Result<TransferOrderVO> crossBankTransfer(@RequestBody @Valid TransferDTO dto) {
+        log.info("接收到跨行转账请求, businessNo: {}, fromAccountId: {}, toAccountId: {}, channelCode: {}, amount: {}",
+                dto.getBusinessNo(), dto.getFromAccountId(), dto.getToAccountId(),
+                dto.getChannelCode(), dto.getAmount());
+
+        if (dto.getChannelCode() == null || dto.getChannelCode().trim().isEmpty()) {
+            return Result.failure(ResultCodeEnum.PARAM_ERROR.getCode(), "渠道编码不能为空");
+        }
+
+        TransferOrderVO vo = transferService.crossBankTransfer(dto);
+        return Result.success(vo);
+    }
 }

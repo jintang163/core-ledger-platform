@@ -114,4 +114,14 @@ public class PaymentOrderVO implements Serializable {
     /** 更新时间 */
     @ApiModelProperty(value = "更新时间")
     private LocalDateTime updateTime;
+
+    /** Saga事务ID（Saga模式时返回） */
+    @ApiModelProperty(value = "Saga事务ID", example = "SAGA_123456789",
+            notes = "Saga模式下的全局事务ID")
+    private String sagaId;
+
+    /** 原支付订单ID（退款时返回） */
+    @ApiModelProperty(value = "原支付订单ID", example = "PAY2024010100001",
+            notes = "退款时关联的原支付订单ID")
+    private String originalPaymentId;
 }
