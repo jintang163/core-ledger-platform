@@ -65,4 +65,9 @@ public class RefundDTO implements Serializable {
     @ApiModelProperty(value = "退款原因/备注", example = "用户申请退款",
             notes = "退款的原因说明")
     private String remark;
+
+    /** 回调URL（退款成功后异步通知） */
+    @ApiModelProperty(value = "回调URL", example = "https://api.example.com/callback/refund",
+            notes = "退款成功后异步通知的回调地址")
+    private String callbackUrl;
 }

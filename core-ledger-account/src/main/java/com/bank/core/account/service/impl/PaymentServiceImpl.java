@@ -65,6 +65,7 @@ public class PaymentServiceImpl implements PaymentService {
     private final RocketMQTemplate rocketMQTemplate;
     private final ChannelAdapterFactory channelAdapterFactory;
     private final com.bank.core.account.service.DistributedTransactionService distributedTransactionService;
+    private final com.bank.core.account.service.MessageProducerService messageProducerService;
 
     /**
      * 单账户充值（入金）
@@ -1004,12 +1005,21 @@ public class PaymentServiceImpl implements PaymentService {
         vo.setSagaId(sagaId);
         vo.setOriginalPaymentId(originalPaymentId);
         vo.setRemark("退款已提交，Saga事务ID: " + sagaId);
+
+        try {
+            messageProducerService.sendRefundSuccessMessage(vo);
+        } catch (Exception e) {
+            log.error("发送退款成功消息失败, refundPaymentId={}", refundPaymentId, e);
+        }
+
+
+
         return vo;
     }
 
     @Override
     public PaymentOrderVO refund(com.bank.core.api.dto.RefundDTO dto) {
-        return refund(
+        PaymentOrderVO vo = refund(
                 dto.getOriginalPaymentId(),
                 dto.getRefundAccountId(),
                 dto.getAmount(),
@@ -1018,10 +1028,52 @@ public class PaymentServiceImpl implements PaymentService {
                 dto.getOperator(),
                 dto.getRemark()
         );
+
+        try {
+            if (dto.getCallbackUrl() != null && !dto.getCallbackUrl().trim().isEmpty()) {
+                java.util.Map<String, Object> additionalData = new java.util.HashMap<>();
+                additionalData.put("sagaId", vo.getSagaId());
+                additionalData.put("originalPaymentId", dto.getOriginalPaymentId());
+                messageProducerService.sendCallbackNotify(
+                        "REFUND_SUCCESS",
+                        dto.getCallbackUrl(),
+                        buildCallbackData(vo, additionalData),
+                        dto.getBusinessNo()
+                );
+            }
+        } catch (Exception e) {
+            log.error("发送退款回调失败, refundPaymentId={}", vo.getPaymentId(), e);
+        }
+
+        return vo;
     }
 
     private void deleteAccountCache(String accountId) {
         String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();
+    }
+
+    private java.util.Map<String, Object> buildCallbackData(PaymentOrderVO vo, java.util.Map<String, Object> additionalData) {
+        java.util.Map<String, Object> data = new java.util.HashMap<>();
+        data.put("paymentId", vo.getPaymentId());
+        data.put("businessNo", vo.getBusinessNo());
+        data.put("payerAccountId", vo.getPayerAccountId());
+        data.put("payeeAccountId", vo.getPayeeAccountId());
+        data.put("amount", vo.getAmount());
+        data.put("currency", vo.getCurrency());
+        data.put("paymentType", vo.getPaymentType());
+        data.put("paymentTypeDesc", vo.getPaymentTypeDesc());
+        data.put("status", vo.getStatus());
+        data.put("statusDesc", vo.getStatusDesc());
+        data.put("paymentTime", vo.getPaymentTime());
+        data.put("channelCode", vo.getChannelCode());
+        data.put("remark", vo.getRemark());
+        data.put("sagaId", vo.getSagaId());
+        data.put("originalPaymentId", vo.getOriginalPaymentId());
+
+        if (additionalData != null) {
+            data.putAll(additionalData);
+        }
+        return data;
     }
 }

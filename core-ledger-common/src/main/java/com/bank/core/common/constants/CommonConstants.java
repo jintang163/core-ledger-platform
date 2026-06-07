@@ -42,8 +42,25 @@ public interface CommonConstants {
     String ROCKETMQ_TAG_TRANSFER = "transfer";
     String ROCKETMQ_TAG_BATCH_TRANSFER = "batch_transfer";
     String ROCKETMQ_TAG_CHANNEL_CALLBACK = "channel:callback";
+    String ROCKETMQ_TOPIC_TRANSACTION = "transaction-topic";
+    String ROCKETMQ_TAG_ACCOUNT_CHANGE = "account:change";
+    String ROCKETMQ_TAG_CLEARING_RESULT = "clearing:result";
+    String ROCKETMQ_TAG_NOTIFY_CALLBACK = "notify:callback";
+    String ROCKETMQ_TAG_TRANSFER_SUCCESS = "transfer:success";
+    String ROCKETMQ_TAG_PAYMENT_SUCCESS = "payment:success";
+    String ROCKETMQ_TAG_REFUND_SUCCESS = "refund:success";
 
-    Integer MAX_RETRY_TIMES = 3;
+    String MESSAGE_STATUS_PENDING = "PENDING";
+    String MESSAGE_STATUS_SENDING = "SENDING";
+    String MESSAGE_STATUS_SUCCESS = "SUCCESS";
+    String MESSAGE_STATUS_FAILED = "FAILED";
+
+    String CALLBACK_STATUS_PENDING = "PENDING";
+    String CALLBACK_STATUS_SUCCESS = "SUCCESS";
+    String CALLBACK_STATUS_FAILED = "FAILED";
+
+    Integer MAX_RETRY_TIMES = 5;
+    Long CALLBACK_RETRY_INTERVAL = 60000L;
 
     Integer MAX_BATCH_TRANSFER_SIZE = 1000;
 

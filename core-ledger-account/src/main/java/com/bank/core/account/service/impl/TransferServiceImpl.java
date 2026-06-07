@@ -65,6 +65,7 @@ public class TransferServiceImpl implements TransferService {
     private final RocketMQTemplate rocketMQTemplate;
     private final PrometheusConfig prometheusConfig;
     private final com.bank.core.account.service.DistributedTransactionService distributedTransactionService;
+    private final com.bank.core.account.service.MessageProducerService messageProducerService;
 
     /**
      * 账户间转账
@@ -493,6 +494,12 @@ public class TransferServiceImpl implements TransferService {
         } catch (Exception e) {
             log.error("发送转账事件失败, transferId: {}", vo.getTransferId(), e);
         }
+
+        try {
+            messageProducerService.sendTransferSuccessMessage(vo);
+        } catch (Exception e) {
+            log.error("发送转账成功消息失败, transferId: {}", vo.getTransferId(), e);
+        }
     }
 
     /**
@@ -521,6 +528,13 @@ public class TransferServiceImpl implements TransferService {
 
         TransferOrderVO vo = convertToVO(order);
         vo.setRemark("跨行转账处理中，Saga事务ID: " + sagaId);
+
+        try {
+            String callbackUrl = dto.getCallbackUrl();
+            messageProducerService.sendTransferSuccessWithCallback(vo, callbackUrl, null);
+        } catch (Exception e) {
+            log.error("发送跨行转账成功消息及回调失败, sagaId={}", sagaId, e);
+        }
 
         log.info("跨行转账提交完成, sagaId={}, businessNo={}", sagaId, dto.getBusinessNo());
         return vo;

@@ -82,4 +82,9 @@ public class TransferDTO implements Serializable {
     @ApiModelProperty(value = "操作员", example = "admin",
             notes = "操作人标识")
     private String operator;
+
+    /** 回调URL（交易成功后异步通知） */
+    @ApiModelProperty(value = "回调URL", example = "https://api.example.com/callback/transfer",
+            notes = "交易成功后异步通知的回调地址")
+    private String callbackUrl;
 }

@@ -412,6 +412,68 @@ CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Saga事务日志表';
 
 -- -----------------------------------------------------
+-- 可靠消息表 t_reliable_message
+-- 用于可靠消息最终一致性，消息表 + 定时轮询确保下游消费成功
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_reliable_message (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    message_id VARCHAR(64) NOT NULL COMMENT '消息ID',
+    message_type VARCHAR(32) NOT NULL COMMENT '消息类型：ACCOUNT_CHANGE-账户变动 TRANSFER_SUCCESS-转账成功 PAYMENT_SUCCESS-支付成功 REFUND_SUCCESS-退款成功 CLEARING_RESULT-清算结果',
+    topic VARCHAR(64) NOT NULL COMMENT 'RocketMQ主题',
+    tag VARCHAR(32) DEFAULT NULL COMMENT 'RocketMQ标签',
+    message_key VARCHAR(128) DEFAULT NULL COMMENT '消息Key（用于幂等）',
+    message_content TEXT DEFAULT NULL COMMENT '消息内容JSON',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '关联业务流水号',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING-待发送 SENDING-发送中 SUCCESS-发送成功 FAILED-发送失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry_times INT NOT NULL DEFAULT 5 COMMENT '最大重试次数',
+    next_retry_time BIGINT NOT NULL COMMENT '下次重试时间戳（毫秒）',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    send_time DATETIME DEFAULT NULL COMMENT '发送成功时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_message_id (message_id),
+    KEY idx_status (status),
+    KEY idx_next_retry_time (next_retry_time),
+    KEY idx_business_no (business_no),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='可靠消息表';
+
+-- -----------------------------------------------------
+-- 回调日志表 t_callback_log
+-- 用于对商户或渠道方发送HTTP回调（带重试机制）
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_callback_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    log_id VARCHAR(64) NOT NULL COMMENT '回调日志ID',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '关联业务流水号',
+    callback_type VARCHAR(32) NOT NULL COMMENT '回调类型：TRANSFER_SUCCESS-转账成功 PAYMENT_SUCCESS-支付成功 REFUND_SUCCESS-退款成功',
+    callback_url VARCHAR(512) NOT NULL COMMENT '回调URL',
+    request_method VARCHAR(16) NOT NULL DEFAULT 'POST' COMMENT '请求方法',
+    request_body TEXT DEFAULT NULL COMMENT '请求体JSON',
+    request_headers TEXT DEFAULT NULL COMMENT '请求头JSON',
+    response_body TEXT DEFAULT NULL COMMENT '响应体',
+    response_status INT DEFAULT NULL COMMENT 'HTTP响应状态码',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING-待回调 SUCCESS-回调成功 FAILED-回调失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry_times INT NOT NULL DEFAULT 5 COMMENT '最大重试次数',
+    next_retry_time BIGINT NOT NULL COMMENT '下次重试时间戳（毫秒）',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    execute_time DATETIME DEFAULT NULL COMMENT '最后执行时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_log_id (log_id),
+    KEY idx_status (status),
+    KEY idx_next_retry_time (next_retry_time),
+    KEY idx_business_no (business_no),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='回调日志表';
+
+-- -----------------------------------------------------
 -- Saga事务日志表 t_saga_transaction_log
 -- 用于记录Saga分布式事务的执行日志，支持补偿和重试
 -- -----------------------------------------------------
@@ -473,6 +535,68 @@ CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
     KEY idx_create_time (create_time),
     KEY idx_business_no (business_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Saga事务日志表';
+
+-- -----------------------------------------------------
+-- 可靠消息表 t_reliable_message
+-- 用于可靠消息最终一致性，消息表 + 定时轮询确保下游消费成功
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_reliable_message (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    message_id VARCHAR(64) NOT NULL COMMENT '消息ID',
+    message_type VARCHAR(32) NOT NULL COMMENT '消息类型：ACCOUNT_CHANGE-账户变动 TRANSFER_SUCCESS-转账成功 PAYMENT_SUCCESS-支付成功 REFUND_SUCCESS-退款成功 CLEARING_RESULT-清算结果',
+    topic VARCHAR(64) NOT NULL COMMENT 'RocketMQ主题',
+    tag VARCHAR(32) DEFAULT NULL COMMENT 'RocketMQ标签',
+    message_key VARCHAR(128) DEFAULT NULL COMMENT '消息Key（用于幂等）',
+    message_content TEXT DEFAULT NULL COMMENT '消息内容JSON',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '关联业务流水号',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING-待发送 SENDING-发送中 SUCCESS-发送成功 FAILED-发送失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry_times INT NOT NULL DEFAULT 5 COMMENT '最大重试次数',
+    next_retry_time BIGINT NOT NULL COMMENT '下次重试时间戳（毫秒）',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    send_time DATETIME DEFAULT NULL COMMENT '发送成功时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_message_id (message_id),
+    KEY idx_status (status),
+    KEY idx_next_retry_time (next_retry_time),
+    KEY idx_business_no (business_no),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='可靠消息表';
+
+-- -----------------------------------------------------
+-- 回调日志表 t_callback_log
+-- 用于对商户或渠道方发送HTTP回调（带重试机制）
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_callback_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    log_id VARCHAR(64) NOT NULL COMMENT '回调日志ID',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '关联业务流水号',
+    callback_type VARCHAR(32) NOT NULL COMMENT '回调类型：TRANSFER_SUCCESS-转账成功 PAYMENT_SUCCESS-支付成功 REFUND_SUCCESS-退款成功',
+    callback_url VARCHAR(512) NOT NULL COMMENT '回调URL',
+    request_method VARCHAR(16) NOT NULL DEFAULT 'POST' COMMENT '请求方法',
+    request_body TEXT DEFAULT NULL COMMENT '请求体JSON',
+    request_headers TEXT DEFAULT NULL COMMENT '请求头JSON',
+    response_body TEXT DEFAULT NULL COMMENT '响应体',
+    response_status INT DEFAULT NULL COMMENT 'HTTP响应状态码',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING-待回调 SUCCESS-回调成功 FAILED-回调失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry_times INT NOT NULL DEFAULT 5 COMMENT '最大重试次数',
+    next_retry_time BIGINT NOT NULL COMMENT '下次重试时间戳（毫秒）',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    execute_time DATETIME DEFAULT NULL COMMENT '最后执行时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_log_id (log_id),
+    KEY idx_status (status),
+    KEY idx_next_retry_time (next_retry_time),
+    KEY idx_business_no (business_no),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='回调日志表';
 
 -- =====================================================
 -- 数据库：core_ledger_1
@@ -875,3 +999,65 @@ CREATE TABLE IF NOT EXISTS t_saga_transaction_log (
     KEY idx_create_time (create_time),
     KEY idx_business_no (business_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='Saga事务日志表';
+
+-- -----------------------------------------------------
+-- 可靠消息表 t_reliable_message
+-- 用于可靠消息最终一致性，消息表 + 定时轮询确保下游消费成功
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_reliable_message (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    message_id VARCHAR(64) NOT NULL COMMENT '消息ID',
+    message_type VARCHAR(32) NOT NULL COMMENT '消息类型：ACCOUNT_CHANGE-账户变动 TRANSFER_SUCCESS-转账成功 PAYMENT_SUCCESS-支付成功 REFUND_SUCCESS-退款成功 CLEARING_RESULT-清算结果',
+    topic VARCHAR(64) NOT NULL COMMENT 'RocketMQ主题',
+    tag VARCHAR(32) DEFAULT NULL COMMENT 'RocketMQ标签',
+    message_key VARCHAR(128) DEFAULT NULL COMMENT '消息Key（用于幂等）',
+    message_content TEXT DEFAULT NULL COMMENT '消息内容JSON',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '关联业务流水号',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING-待发送 SENDING-发送中 SUCCESS-发送成功 FAILED-发送失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry_times INT NOT NULL DEFAULT 5 COMMENT '最大重试次数',
+    next_retry_time BIGINT NOT NULL COMMENT '下次重试时间戳（毫秒）',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    send_time DATETIME DEFAULT NULL COMMENT '发送成功时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_message_id (message_id),
+    KEY idx_status (status),
+    KEY idx_next_retry_time (next_retry_time),
+    KEY idx_business_no (business_no),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='可靠消息表';
+
+-- -----------------------------------------------------
+-- 回调日志表 t_callback_log
+-- 用于对商户或渠道方发送HTTP回调（带重试机制）
+-- -----------------------------------------------------
+CREATE TABLE IF NOT EXISTS t_callback_log (
+    id BIGINT NOT NULL COMMENT '主键ID',
+    log_id VARCHAR(64) NOT NULL COMMENT '回调日志ID',
+    business_no VARCHAR(64) DEFAULT NULL COMMENT '关联业务流水号',
+    callback_type VARCHAR(32) NOT NULL COMMENT '回调类型：TRANSFER_SUCCESS-转账成功 PAYMENT_SUCCESS-支付成功 REFUND_SUCCESS-退款成功',
+    callback_url VARCHAR(512) NOT NULL COMMENT '回调URL',
+    request_method VARCHAR(16) NOT NULL DEFAULT 'POST' COMMENT '请求方法',
+    request_body TEXT DEFAULT NULL COMMENT '请求体JSON',
+    request_headers TEXT DEFAULT NULL COMMENT '请求头JSON',
+    response_body TEXT DEFAULT NULL COMMENT '响应体',
+    response_status INT DEFAULT NULL COMMENT 'HTTP响应状态码',
+    status VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '状态：PENDING-待回调 SUCCESS-回调成功 FAILED-回调失败',
+    retry_count INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    max_retry_times INT NOT NULL DEFAULT 5 COMMENT '最大重试次数',
+    next_retry_time BIGINT NOT NULL COMMENT '下次重试时间戳（毫秒）',
+    error_msg VARCHAR(1000) DEFAULT NULL COMMENT '错误信息',
+    execute_time DATETIME DEFAULT NULL COMMENT '最后执行时间',
+    create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    deleted TINYINT NOT NULL DEFAULT 0 COMMENT '逻辑删除：0-未删除，1-已删除',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_log_id (log_id),
+    KEY idx_status (status),
+    KEY idx_next_retry_time (next_retry_time),
+    KEY idx_business_no (business_no),
+    KEY idx_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='回调日志表';
