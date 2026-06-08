@@ -224,7 +224,7 @@ public class PaymentServiceImpl implements PaymentService {
         log.info("开始提现, businessNo: {}, accountId: {}, amount: {}, channel: {}",
                 dto.getBusinessNo(), dto.getAccountId(), dto.getAmount(), dto.getChannelCode());
 
-        RateLimitUtil.checkRateLimit(dto.getAccountId(), CommonConstants.RATE_LIMIT_TRANSFER_SUFFIX);
+        RateLimitUtil.checkRateLimit(dto.getAccountId(), CommonConstants.RATE_LIMIT_WITHDRAW_SUFFIX);
 
         try {
             IdempotentUtil.checkIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
@@ -1077,11 +1077,7 @@ public class PaymentServiceImpl implements PaymentService {
     }
 
     private void deleteAccountCache(String accountId) {
-        String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(cacheKey).delete();
-        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(balanceCacheKey).delete();
-        log.debug("删除账户缓存及余额缓存, accountId: {}", accountId);
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 
     private java.util.Map<String, Object> buildCallbackData(PaymentOrderVO vo, java.util.Map<String, Object> additionalData) {

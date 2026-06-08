@@ -155,9 +155,10 @@ public interface CommonConstants {
     /** 账户操作限流前缀 */
     String ACCOUNT_RATE_LIMIT_PREFIX = "account:rate_limit:";
 
-    /** 转账/充值操作限流键后缀 */
+    /** 转账/充值/提现操作限流键后缀 */
     String RATE_LIMIT_TRANSFER_SUFFIX = ":transfer";
     String RATE_LIMIT_RECHARGE_SUFFIX = ":recharge";
+    String RATE_LIMIT_WITHDRAW_SUFFIX = ":withdraw";
 
     /** 默认限流：每秒最多允许 10 次操作 */
     Integer DEFAULT_RATE_LIMIT = 10;

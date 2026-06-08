@@ -12,6 +12,7 @@ import com.bank.core.common.constants.CommonConstants;
 import com.bank.core.common.enums.*;
 import com.bank.core.common.exception.BusinessException;
 import com.bank.core.common.utils.AmountUtil;
+import com.bank.core.common.utils.IdempotentUtil;
 import com.bank.core.common.utils.SnowflakeIdGenerator;
 import io.seata.core.context.RootContext;
 import io.seata.rm.tcc.api.BusinessActionContext;
@@ -311,7 +312,6 @@ public class TransferTccActionImpl implements TransferTccAction {
     }
 
     private void deleteAccountCache(String accountId) {
-        String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(cacheKey).delete();
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 }

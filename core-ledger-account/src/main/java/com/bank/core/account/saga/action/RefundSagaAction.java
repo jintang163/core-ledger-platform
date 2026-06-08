@@ -14,6 +14,7 @@ import com.bank.core.common.constants.CommonConstants;
 import com.bank.core.common.enums.*;
 import com.bank.core.common.exception.BusinessException;
 import com.bank.core.common.utils.AmountUtil;
+import com.bank.core.common.utils.IdempotentUtil;
 import com.bank.core.common.utils.SnowflakeIdGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -303,7 +304,6 @@ public class RefundSagaAction implements SagaAction {
     }
 
     private void deleteAccountCache(String accountId) {
-        String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(cacheKey).delete();
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 }

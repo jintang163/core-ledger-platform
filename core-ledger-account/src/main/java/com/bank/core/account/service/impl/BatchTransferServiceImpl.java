@@ -97,14 +97,9 @@ public class BatchTransferServiceImpl implements BatchTransferService {
         log.info("开始批量转账, businessNo: {}, fromAccountId: {}, itemCount: {}",
                 dto.getBusinessNo(), dto.getFromAccountId(), dto.getItems().size());
 
-        IdempotentUtil.checkIdempotent(dto.getRequestId());
-
-        validateBatchParam(dto);
-
-        String idempotentKey = CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX + dto.getBusinessNo();
-        RBucket<String> idempotentBucket = redissonClient.getBucket(idempotentKey);
-        String cachedBatchId = idempotentBucket.get();
-        if (cachedBatchId != null) {
+        String cachedBatchId = IdempotentUtil.getIdempotentValue(
+                CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+        if (cachedBatchId != null && !IdempotentUtil.PROCESSING.equals(cachedBatchId)) {
             log.warn("幂等命中, businessNo: {}, batchId: {}", dto.getBusinessNo(), cachedBatchId);
             BatchTransferOrder existOrder = batchTransferOrderMapper.selectByBatchId(cachedBatchId);
             if (existOrder != null) {
@@ -115,105 +110,158 @@ public class BatchTransferServiceImpl implements BatchTransferService {
         BatchTransferOrder existOrder = batchTransferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
         if (existOrder != null) {
             log.warn("业务单号已存在, businessNo: {}", dto.getBusinessNo());
-            idempotentBucket.set(existOrder.getBatchId(), 24, TimeUnit.HOURS);
+            IdempotentUtil.setIdempotentResult(
+                    CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    existOrder.getBatchId(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
             return convertToVO(existOrder, true);
         }
 
-        String lockKey = CommonConstants.BATCH_TRANSFER_LOCK_PREFIX + dto.getBusinessNo();
-        return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            BatchTransferOrder existAgain = batchTransferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
-            if (existAgain != null) {
-                log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
-                idempotentBucket.set(existAgain.getBatchId(), 24, TimeUnit.HOURS);
-                return convertToVO(existAgain, true);
-            }
+        IdempotentUtil.acquireLock(CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX,
+                dto.getBusinessNo(),
+                CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                TimeUnit.HOURS);
 
-            Account fromAccount = validateAccount(dto.getFromAccountId(), dto.getCurrency());
-
-            BigDecimal totalAmount = dto.getItems().stream()
-                    .map(BatchTransferItemDTO::getAmount)
-                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-
-            validateSufficientBalance(fromAccount, totalAmount);
-
-            String batchId = SnowflakeIdGenerator.nextIdStr();
-            String batchNo = SnowflakeIdGenerator.generateBatchNo();
-
-            BatchTransferOrder order = buildBatchOrder(dto, batchId, batchNo, fromAccount, totalAmount);
-            batchTransferOrderMapper.insert(order);
-
-            List<BatchTransferItem> items = buildBatchItems(dto.getItems(), batchId, fromAccount);
-            for (BatchTransferItem item : items) {
-                batchTransferItemMapper.insert(item);
-            }
-
-            order.setStatus(PaymentStatusEnum.PROCESSING.getCode());
-            order.setUpdateTime(LocalDateTime.now());
-            batchTransferOrderMapper.updateById(order);
-
-            int successCount = 0;
-            int failCount = 0;
-            BigDecimal successAmount = BigDecimal.ZERO;
-            BigDecimal failAmount = BigDecimal.ZERO;
-
-            for (BatchTransferItem item : items) {
-                try {
-                    String transactionId = processSingleTransfer(item, fromAccount, dto);
-                    item.setStatus(PaymentStatusEnum.SUCCESS.getCode());
-                    item.setTransactionId(transactionId);
-                    item.setFinishTime(LocalDateTime.now());
-                    item.setUpdateTime(LocalDateTime.now());
-                    batchTransferItemMapper.updateById(item);
-                    successCount++;
-                    successAmount = successAmount.add(item.getAmount());
-                    log.info("批量转账明细成功, batchId: {}, itemId: {}, toAccountId: {}, amount: {}",
-                            batchId, item.getItemId(), item.getToAccountId(), item.getAmount());
-                } catch (Exception e) {
-                    log.error("批量转账明细失败, batchId: {}, itemId: {}, toAccountId: {}, amount: {}",
-                            batchId, item.getItemId(), item.getToAccountId(), item.getAmount(), e);
-                    item.setStatus(PaymentStatusEnum.FAILED.getCode());
-                    item.setFailReason(e.getMessage());
-                    item.setFinishTime(LocalDateTime.now());
-                    item.setUpdateTime(LocalDateTime.now());
-                    batchTransferItemMapper.updateById(item);
-                    failCount++;
-                    failAmount = failAmount.add(item.getAmount());
+        try {
+            String cachedAfterLock = IdempotentUtil.getIdempotentValue(
+                    CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            if (cachedAfterLock != null && !IdempotentUtil.PROCESSING.equals(cachedAfterLock)) {
+                log.warn("占位后二次检查幂等命中, businessNo: {}, batchId: {}", dto.getBusinessNo(), cachedAfterLock);
+                BatchTransferOrder existTx2 = batchTransferOrderMapper.selectByBatchId(cachedAfterLock);
+                if (existTx2 != null) {
+                    return convertToVO(existTx2, true);
                 }
             }
 
-            Integer finalStatus;
-            if (successCount == items.size()) {
-                finalStatus = PaymentStatusEnum.SUCCESS.getCode();
-            } else if (successCount > 0) {
-                finalStatus = PaymentStatusEnum.PARTIAL_SUCCESS.getCode();
-            } else {
-                finalStatus = PaymentStatusEnum.FAILED.getCode();
+            BatchTransferOrder existAfterLock = batchTransferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+            if (existAfterLock != null) {
+                log.warn("占位后二次检查数据库命中, businessNo: {}", dto.getBusinessNo());
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        existAfterLock.getBatchId(),
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
+                return convertToVO(existAfterLock, true);
             }
 
-            order.setStatus(finalStatus);
-            order.setSuccessCount(successCount);
-            order.setSuccessAmount(successAmount);
-            order.setFailCount(failCount);
-            order.setFailAmount(failAmount);
-            order.setFinishTime(LocalDateTime.now());
-            order.setUpdateTime(LocalDateTime.now());
-            batchTransferOrderMapper.updateById(order);
+            validateBatchParam(dto);
 
-            BatchTransferOrderVO vo = convertToVO(order, items);
+            String lockKey = CommonConstants.BATCH_TRANSFER_LOCK_PREFIX + dto.getBusinessNo();
+            return DistributedLockUtil.executeWithLock(lockKey, () -> {
+                BatchTransferOrder existAgain = batchTransferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+                if (existAgain != null) {
+                    log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
+                    IdempotentUtil.setIdempotentResult(
+                            CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX,
+                            dto.getBusinessNo(),
+                            existAgain.getBatchId(),
+                            CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                            TimeUnit.HOURS);
+                    return convertToVO(existAgain, true);
+                }
 
-            idempotentBucket.set(batchId, 24, TimeUnit.HOURS);
+                Account fromAccount = validateAccount(dto.getFromAccountId(), dto.getCurrency());
 
-            sendBatchTransferEvent(vo);
+                BigDecimal totalAmount = dto.getItems().stream()
+                        .map(BatchTransferItemDTO::getAmount)
+                        .reduce(BigDecimal.ZERO, BigDecimal::add);
 
-            deleteAccountCache(dto.getFromAccountId());
-            for (BatchTransferItemDTO itemDTO : dto.getItems()) {
-                deleteAccountCache(itemDTO.getToAccountId());
+                validateSufficientBalance(fromAccount, totalAmount);
+
+                String batchId = SnowflakeIdGenerator.nextIdStr();
+                String batchNo = SnowflakeIdGenerator.generateBatchNo();
+
+                BatchTransferOrder order = buildBatchOrder(dto, batchId, batchNo, fromAccount, totalAmount);
+                batchTransferOrderMapper.insert(order);
+
+                List<BatchTransferItem> items = buildBatchItems(dto.getItems(), batchId, fromAccount);
+                for (BatchTransferItem item : items) {
+                    batchTransferItemMapper.insert(item);
+                }
+
+                order.setStatus(PaymentStatusEnum.PROCESSING.getCode());
+                order.setUpdateTime(LocalDateTime.now());
+                batchTransferOrderMapper.updateById(order);
+
+                int successCount = 0;
+                int failCount = 0;
+                BigDecimal successAmount = BigDecimal.ZERO;
+                BigDecimal failAmount = BigDecimal.ZERO;
+
+                for (BatchTransferItem item : items) {
+                    try {
+                        String transactionId = processSingleTransfer(item, fromAccount, dto);
+                        item.setStatus(PaymentStatusEnum.SUCCESS.getCode());
+                        item.setTransactionId(transactionId);
+                        item.setFinishTime(LocalDateTime.now());
+                        item.setUpdateTime(LocalDateTime.now());
+                        batchTransferItemMapper.updateById(item);
+                        successCount++;
+                        successAmount = successAmount.add(item.getAmount());
+                        log.info("批量转账明细成功, batchId: {}, itemId: {}, toAccountId: {}, amount: {}",
+                                batchId, item.getItemId(), item.getToAccountId(), item.getAmount());
+                    } catch (Exception e) {
+                        log.error("批量转账明细失败, batchId: {}, itemId: {}, toAccountId: {}, amount: {}",
+                                batchId, item.getItemId(), item.getToAccountId(), item.getAmount(), e);
+                        item.setStatus(PaymentStatusEnum.FAILED.getCode());
+                        item.setFailReason(e.getMessage());
+                        item.setFinishTime(LocalDateTime.now());
+                        item.setUpdateTime(LocalDateTime.now());
+                        batchTransferItemMapper.updateById(item);
+                        failCount++;
+                        failAmount = failAmount.add(item.getAmount());
+                    }
+                }
+
+                Integer finalStatus;
+                if (successCount == items.size()) {
+                    finalStatus = PaymentStatusEnum.SUCCESS.getCode();
+                } else if (successCount > 0) {
+                    finalStatus = PaymentStatusEnum.PARTIAL_SUCCESS.getCode();
+                } else {
+                    finalStatus = PaymentStatusEnum.FAILED.getCode();
+                }
+
+                order.setStatus(finalStatus);
+                order.setSuccessCount(successCount);
+                order.setSuccessAmount(successAmount);
+                order.setFailCount(failCount);
+                order.setFailAmount(failAmount);
+                order.setFinishTime(LocalDateTime.now());
+                order.setUpdateTime(LocalDateTime.now());
+                batchTransferOrderMapper.updateById(order);
+
+                BatchTransferOrderVO vo = convertToVO(order, items);
+
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        batchId,
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
+
+                sendBatchTransferEvent(vo);
+
+                deleteAccountCache(dto.getFromAccountId());
+                for (BatchTransferItemDTO itemDTO : dto.getItems()) {
+                    deleteAccountCache(itemDTO.getToAccountId());
+                }
+
+                log.info("批量转账完成, batchId: {}, total: {}, success: {}, fail: {}, status: {}",
+                        batchId, items.size(), successCount, failCount, finalStatus);
+                return vo;
+            });
+        } catch (Exception e) {
+            if (e instanceof BusinessException
+                    && ResultCodeEnum.DUPLICATE_REQUEST.getCode().equals(((BusinessException) e).getCode())) {
+                throw e;
             }
-
-            log.info("批量转账完成, batchId: {}, total: {}, success: {}, fail: {}, status: {}",
-                    batchId, items.size(), successCount, failCount, finalStatus);
-            return vo;
-        });
+            IdempotentUtil.removeIdempotent(CommonConstants.BATCH_TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            throw e;
+        }
     }
 
     /**
@@ -614,7 +662,6 @@ public class BatchTransferServiceImpl implements BatchTransferService {
      * @param accountId 账户ID
      */
     private void deleteAccountCache(String accountId) {
-        String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(cacheKey).delete();
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 }

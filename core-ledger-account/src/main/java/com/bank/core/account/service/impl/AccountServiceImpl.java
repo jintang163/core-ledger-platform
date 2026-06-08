@@ -378,14 +378,10 @@ public class AccountServiceImpl implements AccountService {
 
     @Override
     public void deleteBalanceCache(String accountId) {
-        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(balanceCacheKey).delete();
-        log.debug("删除账户余额缓存, accountId: {}", accountId);
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 
     private void deleteAccountCache(String accountId) {
-        String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(cacheKey).delete();
-        deleteBalanceCache(accountId);
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 }

@@ -158,14 +158,13 @@ public class TransactionServiceImpl implements TransactionService {
         }
 
         // ============================================================
-        // 2. 幂等校验（缓存层）
+        // 2. 幂等校验（查结果）
         // 先检查Redis缓存中是否已有处理结果，避免查库
         // ============================================================
-        String idempotentKey = CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX + dto.getBusinessNo();
-        RBucket<String> idempotentBucket = redissonClient.getBucket(idempotentKey);
-        String cachedTransactionId = idempotentBucket.get();
-        if (cachedTransactionId != null) {
-            log.warn("幂等命中（缓存）, businessNo: {}, transactionId: {}, 直接返回已有结果", 
+        String cachedTransactionId = IdempotentUtil.getIdempotentValue(
+                CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+        if (cachedTransactionId != null && !IdempotentUtil.PROCESSING.equals(cachedTransactionId)) {
+            log.warn("幂等命中（缓存）, businessNo: {}, transactionId: {}, 直接返回已有结果",
                     dto.getBusinessNo(), cachedTransactionId);
             Transaction existTx = transactionMapper.selectByTransactionId(cachedTransactionId);
             if (existTx != null) {
@@ -180,117 +179,173 @@ public class TransactionServiceImpl implements TransactionService {
         Transaction existTx = transactionMapper.selectByBusinessNo(dto.getBusinessNo());
         if (existTx != null) {
             log.warn("幂等命中（数据库）, businessNo: {}, 直接返回已有结果", dto.getBusinessNo());
-            idempotentBucket.set(existTx.getTransactionId(), 24, TimeUnit.HOURS);
+            IdempotentUtil.setIdempotentResult(
+                    CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    existTx.getTransactionId(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
             return convertToVO(existTx, true);
         }
 
         // ============================================================
-        // 4. 参数完整性校验
+        // 4. 幂等占位（锁定）
         // ============================================================
-        validateParam(dto);
+        IdempotentUtil.acquireLock(CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX,
+                dto.getBusinessNo(),
+                CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                TimeUnit.HOURS);
 
-        // ============================================================
-        // 5. 缓冲记账快速处理路径（高并发优化）
-        // 如果涉及的账户启用了缓冲记账，先记录流水立即返回成功
-        // 由后台定时任务异步批量更新余额，大幅提升吞吐量
-        // 适用场景：允许短暂数据不一致（最大延迟5秒）的高并发批量操作
-        // ============================================================
-        if (hotAccountConfig.getHot().isEnabled() && hotAccountConfig.getHot().isBufferEnabled()) {
-            // 检查是否有账户启用了缓冲记账
-            boolean hasBufferAccount = dto.getEntries().stream()
-                    .anyMatch(entry -> bufferAccountingService.isBufferEnabled(entry.getAccountId()));
-            
-            if (hasBufferAccount) {
-                log.info("检测到缓冲记账账户，采用缓冲记账快速处理路径, businessNo: {}", dto.getBusinessNo());
-                return processWithBufferAccounting(dto, idempotentBucket);
+        try {
+            // ============================================================
+            // 5. 占位后二次检查（双重检查锁定）
+            // ============================================================
+            String cachedAfterLock = IdempotentUtil.getIdempotentValue(
+                    CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            if (cachedAfterLock != null && !IdempotentUtil.PROCESSING.equals(cachedAfterLock)) {
+                log.warn("占位后二次检查幂等命中, businessNo: {}, transactionId: {}",
+                        dto.getBusinessNo(), cachedAfterLock);
+                Transaction existTx2 = transactionMapper.selectByTransactionId(cachedAfterLock);
+                if (existTx2 != null) {
+                    return convertToVO(existTx2, true);
+                }
             }
+
+            Transaction existAfterLock = transactionMapper.selectByBusinessNo(dto.getBusinessNo());
+            if (existAfterLock != null) {
+                log.warn("占位后二次检查数据库命中, businessNo: {}", dto.getBusinessNo());
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        existAfterLock.getTransactionId(),
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
+                return convertToVO(existAfterLock, true);
+            }
+
+            // ============================================================
+            // 6. 参数完整性校验
+            // ============================================================
+            validateParam(dto);
+
+            // ============================================================
+            // 7. 缓冲记账快速处理路径（高并发优化）
+            // 如果涉及的账户启用了缓冲记账，先记录流水立即返回成功
+            // 由后台定时任务异步批量更新余额，大幅提升吞吐量
+            // 适用场景：允许短暂数据不一致（最大延迟5秒）的高并发批量操作
+            // ============================================================
+            if (hotAccountConfig.getHot().isEnabled() && hotAccountConfig.getHot().isBufferEnabled()) {
+                boolean hasBufferAccount = dto.getEntries().stream()
+                        .anyMatch(entry -> bufferAccountingService.isBufferEnabled(entry.getAccountId()));
+
+                if (hasBufferAccount) {
+                    log.info("检测到缓冲记账账户，采用缓冲记账快速处理路径, businessNo: {}", dto.getBusinessNo());
+                    return processWithBufferAccounting(dto);
+                }
+            }
+
+            // ============================================================
+            // 8. 正常记账处理路径（强一致）
+            // 使用分布式锁确保同一业务单号不会并发处理
+            // ============================================================
+            String lockKey = CommonConstants.TRANSACTION_LOCK_PREFIX + dto.getBusinessNo();
+            return DistributedLockUtil.executeWithLock(lockKey, () -> {
+                // 8.1 锁内二次幂等检查，防止并发场景下的重复处理
+                Transaction existAgain = transactionMapper.selectByBusinessNo(dto.getBusinessNo());
+                if (existAgain != null) {
+                    log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
+                    IdempotentUtil.setIdempotentResult(
+                            CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX,
+                            dto.getBusinessNo(),
+                            existAgain.getTransactionId(),
+                            CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                            TimeUnit.HOURS);
+                    return convertToVO(existAgain, true);
+                }
+
+                // 8.2 借贷平衡校验，确保复式记账的借贷相等
+                validateDebitCreditBalance(dto.getEntries());
+
+                // 8.3 账户校验与准备（状态检查、余额校验，考虑热点账户和缓冲记账）
+                List<Account> accounts = validateAndPrepareAccounts(dto.getEntries());
+
+                // 8.4 生成交易ID和流水号（使用带业务前缀的ID，便于分片路由和识别）
+                String transactionId = SnowflakeIdGenerator.generateTransactionId();
+                String transactionNo = SnowflakeIdGenerator.generateTransactionNo();
+                String voucherNo = SnowflakeIdGenerator.generateVoucherNo();
+
+                // 8.5 构建交易和分录实体
+                Transaction transaction = buildTransaction(dto, transactionId, transactionNo, voucherNo);
+                List<TransactionEntry> entries = buildEntries(dto.getEntries(), transactionId, accounts);
+
+                // 8.6 更新账户余额（带乐观锁重试、热点账户分片）
+                updateAccountBalancesWithRetry(accounts, dto.getEntries());
+
+                // 8.7 持久化交易和分录记录
+                transactionMapper.insert(transaction);
+                for (TransactionEntry entry : entries) {
+                    entryMapper.insert(entry);
+                }
+
+                // 8.8 更新交易状态为成功
+                transaction.setStatus(TransactionStatusEnum.SUCCESS.getCode());
+                transactionMapper.updateById(transaction);
+
+                // 8.9 转换为VO返回
+                TransactionVO vo = convertToVO(transaction, entries, accounts);
+
+                // 8.10 写入幂等结果，有效期24小时
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        transactionId,
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
+
+                // 8.11 发送交易完成事件（异步通知）
+                sendTransactionEvent(vo, dto.getRequestId(), dto.getOperator());
+
+                // 8.12 删除账户缓存，确保下次查询能获取最新数据
+                deleteAccountCaches(accounts);
+
+                log.info("记账成功（强一致）, transactionId: {}, transactionNo: {}", transactionId, transactionNo);
+                return vo;
+            });
+        } catch (Exception e) {
+            if (e instanceof BusinessException
+                    && ResultCodeEnum.DUPLICATE_REQUEST.getCode().equals(((BusinessException) e).getCode())) {
+                throw e;
+            }
+            IdempotentUtil.removeIdempotent(CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            throw e;
         }
-
-        // ============================================================
-        // 6. 正常记账处理路径（强一致）
-        // 使用分布式锁确保同一业务单号不会并发处理
-        // ============================================================
-        String lockKey = CommonConstants.TRANSACTION_LOCK_PREFIX + dto.getBusinessNo();
-        return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            // 6.1 锁内二次幂等检查，防止并发场景下的重复处理
-            Transaction existAgain = transactionMapper.selectByBusinessNo(dto.getBusinessNo());
-            if (existAgain != null) {
-                log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
-                idempotentBucket.set(existAgain.getTransactionId(), 24, TimeUnit.HOURS);
-                return convertToVO(existAgain, true);
-            }
-
-            // 6.2 借贷平衡校验，确保复式记账的借贷相等
-            validateDebitCreditBalance(dto.getEntries());
-
-            // 6.3 账户校验与准备（状态检查、余额校验，考虑热点账户和缓冲记账）
-            List<Account> accounts = validateAndPrepareAccounts(dto.getEntries());
-
-            // 6.4 生成交易ID和流水号（使用带业务前缀的ID，便于分片路由和识别）
-            String transactionId = SnowflakeIdGenerator.generateTransactionId();
-            String transactionNo = SnowflakeIdGenerator.generateTransactionNo();
-            String voucherNo = SnowflakeIdGenerator.generateVoucherNo();
-
-            // 6.5 构建交易和分录实体
-            Transaction transaction = buildTransaction(dto, transactionId, transactionNo, voucherNo);
-            List<TransactionEntry> entries = buildEntries(dto.getEntries(), transactionId, accounts);
-
-            // 6.6 更新账户余额（带乐观锁重试、热点账户分片）
-            updateAccountBalancesWithRetry(accounts, dto.getEntries());
-
-            // 6.7 持久化交易和分录记录
-            transactionMapper.insert(transaction);
-            for (TransactionEntry entry : entries) {
-                entryMapper.insert(entry);
-            }
-
-            // 6.8 更新交易状态为成功
-            transaction.setStatus(TransactionStatusEnum.SUCCESS.getCode());
-            transactionMapper.updateById(transaction);
-
-            // 6.9 转换为VO返回
-            TransactionVO vo = convertToVO(transaction, entries, accounts);
-
-            // 6.10 写入幂等缓存，有效期24小时
-            idempotentBucket.set(transactionId, 24, TimeUnit.HOURS);
-
-            // 6.11 发送交易完成事件（异步通知）
-            sendTransactionEvent(vo, dto.getRequestId(), dto.getOperator());
-
-            // 6.12 删除账户缓存，确保下次查询能获取最新数据
-            deleteAccountCaches(accounts);
-
-            log.info("记账成功（强一致）, transactionId: {}, transactionNo: {}", transactionId, transactionNo);
-            return vo;
-        });
     }
 
     /**
      * 缓冲记账快速处理路径
-     * 
+     *
      * 高并发优化：先记录流水立即返回成功，由后台异步批量更新余额
      * 适用于允许短暂数据不一致（最大延迟5秒）的场景
-     * 
+     *
      * 处理流程：
      * 1. 对每个分录调用bufferAccountingService.recordBufferLog()记录缓冲流水
      * 2. 写入幂等缓存
      * 3. 构造虚拟的成功响应返回
-     * 
+     *
      * 性能优势：
      * - 无需等待数据库余额更新（最耗时的步骤被异步化）
      * - 无需获取账户级分布式锁
      * - 单条流水记录为简单的INSERT操作，并发性能极佳
-     * 
+     *
      * 一致性保证：
      * - 流水记录与余额更新通过唯一约束（businessNo）保证幂等
      * - 后台处理失败会自动重试，最多3次
      * - 余额查询时会自动合并待处理缓冲金额，保证业务层面一致性
-     * 
+     *
      * @param dto 交易创建请求DTO
-     * @param idempotentBucket 幂等缓存Bucket
      * @return 交易结果VO（虚拟成功响应）
      */
-    private TransactionVO processWithBufferAccounting(TransactionCreateDTO dto, RBucket<String> idempotentBucket) {
+    private TransactionVO processWithBufferAccounting(TransactionCreateDTO dto) {
         // 生成虚拟交易ID，用于幂等和查询追踪（使用带业务前缀的ID）
         String transactionId = SnowflakeIdGenerator.generateTransactionId();
 
@@ -300,12 +355,12 @@ public class TransactionServiceImpl implements TransactionService {
             if (bufferAccountingService.isBufferEnabled(entry.getAccountId())) {
                 log.debug("记录缓冲记账流水, accountId: {}, amount: {}, direction: {}",
                         entry.getAccountId(), entry.getAmount(), entry.getDirection());
-                
+
                 // 计算变动金额（分），贷方为负，借方为正
                 long amountFen = AmountUtil.yuanToFen(entry.getAmount());
-                long changeAmount = DebitCreditEnum.CREDIT.getCode().equals(entry.getDirection()) 
+                long changeAmount = DebitCreditEnum.CREDIT.getCode().equals(entry.getDirection())
                         ? -amountFen : amountFen;
-                
+
                 // 调用缓冲记账服务记录流水
                 // 注意：recordBufferLog内部已做幂等处理（按businessNo去重）
                 bufferAccountingService.recordBufferLog(
@@ -321,8 +376,13 @@ public class TransactionServiceImpl implements TransactionService {
             }
         }
 
-        // 写入幂等缓存，防止重复提交
-        idempotentBucket.set(transactionId, 24, TimeUnit.HOURS);
+        // 写入幂等结果，防止重复提交
+        IdempotentUtil.setIdempotentResult(
+                CommonConstants.TRANSACTION_IDEMPOTENT_PREFIX,
+                dto.getBusinessNo(),
+                transactionId,
+                CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                TimeUnit.HOURS);
 
         // 构造虚拟的成功响应
         TransactionVO vo = new TransactionVO();
@@ -752,19 +812,7 @@ public class TransactionServiceImpl implements TransactionService {
      */
     private void deleteAccountCaches(List<Account> accounts) {
         for (Account account : accounts) {
-            String accountId = account.getAccountId();
-
-            String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-            redissonClient.getBucket(cacheKey).delete();
-
-            String hotCacheKey = CommonConstants.HOT_ACCOUNT_LOCK_PREFIX + accountId;
-            redissonClient.getBucket(hotCacheKey).delete();
-
-            String shardCacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + accountId;
-            redissonClient.getBucket(shardCacheKey).delete();
-
-            String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
-            redissonClient.getBucket(balanceCacheKey).delete();
+            IdempotentUtil.deleteAccountCache(account.getAccountId());
         }
     }
 }

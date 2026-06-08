@@ -9,8 +9,12 @@ import org.redisson.api.RateIntervalUnit;
 import org.redisson.api.RateType;
 import org.redisson.api.RedissonClient;
 
+import java.util.concurrent.ConcurrentHashMap;
+
 @Slf4j
 public class RateLimitUtil {
+
+    private static final ConcurrentHashMap<String, Boolean> RATE_LIMIT_INITIALIZED = new ConcurrentHashMap<>();
 
     private static RedissonClient redissonClient;
 
@@ -37,7 +41,12 @@ public class RateLimitUtil {
         try {
             RRateLimiter rateLimiter = redissonClient.getRateLimiter(rateLimitKey);
 
-            rateLimiter.trySetRate(RateType.OVERALL, limit, windowSeconds, RateIntervalUnit.SECONDS);
+            String initKey = rateLimitKey + ":" + limit + ":" + windowSeconds;
+            if (!RATE_LIMIT_INITIALIZED.containsKey(initKey)) {
+                rateLimiter.trySetRate(RateType.OVERALL, limit, windowSeconds, RateIntervalUnit.SECONDS);
+                RATE_LIMIT_INITIALIZED.put(initKey, Boolean.TRUE);
+                log.debug("限流规则初始化, key: {}, limit: {}/{}s", rateLimitKey, limit, windowSeconds);
+            }
 
             boolean acquired = rateLimiter.tryAcquire(1);
             if (!acquired) {
@@ -50,7 +59,8 @@ public class RateLimitUtil {
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
-            log.error("限流检查异常, accountId: {}, operationType: {}", accountId, operationType, e);
+            log.error("限流检查异常，拒绝请求, accountId: {}, operationType: {}", accountId, operationType, e);
+            throw new BusinessException(ResultCodeEnum.SYSTEM_ERROR, "系统繁忙，请稍后重试");
         }
     }
 }

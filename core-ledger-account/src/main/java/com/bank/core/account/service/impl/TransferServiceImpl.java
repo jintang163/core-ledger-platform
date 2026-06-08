@@ -142,19 +142,65 @@ public class TransferServiceImpl implements TransferService {
     private TransferOrderVO transferWithTcc(TransferDTO dto) {
         log.info("行内转账-TCC模式, businessNo: {}", dto.getBusinessNo());
 
-        String xid = distributedTransactionService.transferWithTcc(dto);
-
-        TransferOrder order = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
-        if (order == null) {
-            throw new BusinessException(ResultCodeEnum.TRANSFER_ORDER_NOT_EXIST, "TCC转账订单不存在");
+        String cachedTransferId = IdempotentUtil.getIdempotentValue(
+                CommonConstants.TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+        if (cachedTransferId != null && !IdempotentUtil.PROCESSING.equals(cachedTransferId)) {
+            log.warn("TCC幂等命中, businessNo: {}, transferId: {}", dto.getBusinessNo(), cachedTransferId);
+            TransferOrder existOrder = transferOrderMapper.selectByTransferId(cachedTransferId);
+            if (existOrder != null) {
+                return convertToVO(existOrder);
+            }
         }
 
-        TransferOrderVO vo = convertToVO(order);
-        vo.setRemark("TCC转账处理完成，全局事务ID: " + xid);
+        TransferOrder existOrder = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+        if (existOrder != null) {
+            log.warn("TCC业务单号已存在, businessNo: {}", dto.getBusinessNo());
+            IdempotentUtil.setIdempotentResult(
+                    CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    existOrder.getTransferId(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
+            return convertToVO(existOrder);
+        }
 
-        log.info("行内转账-TCC模式完成, businessNo: {}, xid: {}, transferId: {}",
-                dto.getBusinessNo(), xid, order.getTransferId());
-        return vo;
+        IdempotentUtil.acquireLock(CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                dto.getBusinessNo(),
+                CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                TimeUnit.HOURS);
+
+        try {
+            String xid = distributedTransactionService.transferWithTcc(dto);
+
+            TransferOrder order = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+            if (order == null) {
+                throw new BusinessException(ResultCodeEnum.TRANSFER_ORDER_NOT_EXIST, "TCC转账订单不存在");
+            }
+
+            IdempotentUtil.setIdempotentResult(
+                    CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    order.getTransferId(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
+
+            TransferOrderVO vo = convertToVO(order);
+            vo.setRemark("TCC转账处理完成，全局事务ID: " + xid);
+
+            IdempotentUtil.deleteAccountCache(dto.getFromAccountId());
+            IdempotentUtil.deleteAccountCache(dto.getToAccountId());
+
+            log.info("行内转账-TCC模式完成, businessNo: {}, xid: {}, transferId: {}",
+                    dto.getBusinessNo(), xid, order.getTransferId());
+            return vo;
+        } catch (Exception e) {
+            if (e instanceof BusinessException
+                    && ResultCodeEnum.DUPLICATE_REQUEST.getCode().equals(((BusinessException) e).getCode())) {
+                throw e;
+            }
+            IdempotentUtil.removeIdempotent(CommonConstants.TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            throw e;
+        }
     }
 
     private TransferOrderVO doTransfer(TransferDTO dto) {
@@ -188,7 +234,12 @@ public class TransferServiceImpl implements TransferService {
             TransferOrder existAgain = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
             if (existAgain != null) {
                 log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
-                idempotentBucket.set(existAgain.getTransferId(), 24, TimeUnit.HOURS);
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        existAgain.getTransferId(),
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
                 return convertToVO(existAgain);
             }
 
@@ -560,10 +611,6 @@ public class TransferServiceImpl implements TransferService {
     }
 
     private void deleteAccountCache(String accountId) {
-        String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(cacheKey).delete();
-        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
-        redissonClient.getBucket(balanceCacheKey).delete();
-        log.debug("删除账户缓存及余额缓存, accountId: {}", accountId);
+        IdempotentUtil.deleteAccountCache(accountId);
     }
 }
