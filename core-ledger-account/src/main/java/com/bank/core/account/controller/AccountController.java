@@ -17,6 +17,7 @@ import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
+import java.math.BigDecimal;
 
 /**
  * 账户管理Controller
@@ -166,5 +167,15 @@ public class AccountController {
         log.info("HTTP销户, accountId: {}", dto.getAccountId());
         accountService.closeAccount(dto);
         return Result.success();
+    }
+
+    @GetMapping("/{accountId}/balance")
+    @ApiOperation("查询账户余额（缓存优先，非强一致）")
+    @Timed(value = "account.getBalance.http.duration", description = "HTTP查询账户余额耗时")
+    @Counted(value = "account.getBalance.http.count", description = "HTTP查询账户余额次数")
+    public Result<BigDecimal> getBalance(@PathVariable String accountId) {
+        log.info("HTTP查询账户余额, accountId: {}", accountId);
+        BigDecimal balance = accountService.getBalanceCache(accountId);
+        return Result.success(balance);
     }
 }

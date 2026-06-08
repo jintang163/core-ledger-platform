@@ -141,4 +141,30 @@ public interface CommonConstants {
 
     /** 影子账户归并锁前缀 */
     String SHARD_MERGE_LOCK_PREFIX = "account:shard:merge:";
+
+    /** ==================== 账户余额缓存相关常量 ==================== */
+
+    /** 账户余额缓存前缀（用于高频余额查询，非强一致读可接受） */
+    String ACCOUNT_BALANCE_CACHE_PREFIX = "account:balance:";
+
+    /** 账户余额缓存过期时间（秒） */
+    Long ACCOUNT_BALANCE_CACHE_TTL = 30L;
+
+    /** ==================== 分布式限流相关常量 ==================== */
+
+    /** 账户操作限流前缀 */
+    String ACCOUNT_RATE_LIMIT_PREFIX = "account:rate_limit:";
+
+    /** 转账/充值操作限流键后缀 */
+    String RATE_LIMIT_TRANSFER_SUFFIX = ":transfer";
+    String RATE_LIMIT_RECHARGE_SUFFIX = ":recharge";
+
+    /** 默认限流：每秒最多允许 10 次操作 */
+    Integer DEFAULT_RATE_LIMIT = 10;
+
+    /** 默认限流时间窗口（秒） */
+    Integer DEFAULT_RATE_LIMIT_WINDOW = 1;
+
+    /** 幂等键默认过期时间（小时） */
+    Integer IDEMPOTENT_DEFAULT_TTL_HOURS = 24;
 }

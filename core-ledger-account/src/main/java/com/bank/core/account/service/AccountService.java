@@ -6,6 +6,8 @@ import com.bank.core.api.dto.AccountFreezeDTO;
 import com.bank.core.api.dto.AccountUnfreezeDTO;
 import com.bank.core.api.vo.AccountVO;
 
+import java.math.BigDecimal;
+
 public interface AccountService {
 
     AccountVO createAccount(AccountCreateDTO dto);
@@ -19,4 +21,8 @@ public interface AccountService {
     AccountVO unfreezeAccount(AccountUnfreezeDTO dto);
 
     void closeAccount(AccountCloseDTO dto);
+
+    BigDecimal getBalanceCache(String accountId);
+
+    void deleteBalanceCache(String accountId);
 }

@@ -748,6 +748,7 @@ public class TransactionServiceImpl implements TransactionService {
      * 1. 普通账户缓存
      * 2. 热点账户状态缓存
      * 3. 影子账户分片缓存
+     * 4. 账户余额缓存
      */
     private void deleteAccountCaches(List<Account> accounts) {
         for (Account account : accounts) {
@@ -761,6 +762,9 @@ public class TransactionServiceImpl implements TransactionService {
 
             String shardCacheKey = CommonConstants.SHARD_ACCOUNT_CACHE_PREFIX + accountId;
             redissonClient.getBucket(shardCacheKey).delete();
+
+            String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
+            redissonClient.getBucket(balanceCacheKey).delete();
         }
     }
 }

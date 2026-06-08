@@ -20,6 +20,7 @@ import com.bank.core.common.exception.BusinessException;
 import com.bank.core.common.utils.AmountUtil;
 import com.bank.core.common.utils.DistributedLockUtil;
 import com.bank.core.common.utils.IdempotentUtil;
+import com.bank.core.common.utils.RateLimitUtil;
 import com.bank.core.common.utils.SnowflakeIdGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -94,6 +95,9 @@ public class TransferServiceImpl implements TransferService {
                 dto.getBusinessNo(), dto.getFromAccountId(), dto.getToAccountId(), dto.getAmount(),
                 dto.getDistributedTxType());
 
+        RateLimitUtil.checkRateLimit(dto.getFromAccountId(), CommonConstants.RATE_LIMIT_TRANSFER_SUFFIX);
+        RateLimitUtil.checkRateLimit(dto.getToAccountId(), CommonConstants.RATE_LIMIT_TRANSFER_SUFFIX);
+
         if (dto.getDistributedTxType() != null
                 && DistributedTransactionTypeEnum.TCC.getCode().equals(dto.getDistributedTxType())) {
             log.info("使用TCC模式执行行内转账, businessNo: {}", dto.getBusinessNo());
@@ -103,7 +107,10 @@ public class TransferServiceImpl implements TransferService {
         log.info("使用传统AT模式执行行内转账, businessNo: {}", dto.getBusinessNo());
         return prometheusConfig.recordTransferLatency(() -> {
             try {
-                IdempotentUtil.checkIdempotent(dto.getRequestId());
+                IdempotentUtil.checkIdempotent(CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
                 TransferOrderVO result = doTransfer(dto);
                 prometheusConfig.recordTransactionSuccess();
                 prometheusConfig.recordDistributedTransactionSuccess();
@@ -118,6 +125,9 @@ public class TransferServiceImpl implements TransferService {
                     }
                     if (ResultCodeEnum.ACCOUNT_FROZEN.getCode().equals(be.getCode())) {
                         prometheusConfig.incrementFrozenAccountExceptions();
+                    }
+                    if (!ResultCodeEnum.DUPLICATE_REQUEST.getCode().equals(be.getCode())) {
+                        IdempotentUtil.removeIdempotent(CommonConstants.TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
                     }
                 }
                 throw e;
@@ -151,10 +161,9 @@ public class TransferServiceImpl implements TransferService {
 
         validateTransferParam(dto);
 
-        String idempotentKey = CommonConstants.TRANSFER_IDEMPOTENT_PREFIX + dto.getBusinessNo();
-        RBucket<String> idempotentBucket = redissonClient.getBucket(idempotentKey);
-        String cachedTransferId = idempotentBucket.get();
-        if (cachedTransferId != null) {
+        String cachedTransferId = IdempotentUtil.getIdempotentValue(
+                CommonConstants.TRANSFER_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+        if (cachedTransferId != null && !"PROCESSING".equals(cachedTransferId)) {
             log.warn("幂等命中, businessNo: {}, transferId: {}", dto.getBusinessNo(), cachedTransferId);
             TransferOrder existOrder = transferOrderMapper.selectByTransferId(cachedTransferId);
             if (existOrder != null) {
@@ -165,7 +174,12 @@ public class TransferServiceImpl implements TransferService {
         TransferOrder existOrder = transferOrderMapper.selectByBusinessNo(dto.getBusinessNo());
         if (existOrder != null) {
             log.warn("业务单号已存在, businessNo: {}", dto.getBusinessNo());
-            idempotentBucket.set(existOrder.getTransferId(), 24, TimeUnit.HOURS);
+            IdempotentUtil.setIdempotentResult(
+                    CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    existOrder.getTransferId(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
             return convertToVO(existOrder);
         }
 
@@ -208,7 +222,12 @@ public class TransferServiceImpl implements TransferService {
 
                 TransferOrderVO vo = convertToVO(order);
 
-                idempotentBucket.set(transferId, 24, TimeUnit.HOURS);
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.TRANSFER_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        transferId,
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
 
                 sendTransferEvent(vo);
 
@@ -543,5 +562,8 @@ public class TransferServiceImpl implements TransferService {
     private void deleteAccountCache(String accountId) {
         String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();
+        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
+        redissonClient.getBucket(balanceCacheKey).delete();
+        log.debug("删除账户缓存及余额缓存, accountId: {}", accountId);
     }
 }

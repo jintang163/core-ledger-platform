@@ -19,28 +19,56 @@ public class IdempotentUtil {
     }
 
     public static void checkIdempotent(String requestId) {
-        checkIdempotent(requestId, 24, TimeUnit.HOURS);
+        checkIdempotent(requestId, CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS, TimeUnit.HOURS);
     }
 
     public static void checkIdempotent(String requestId, long ttl, TimeUnit timeUnit) {
-        if (requestId == null || requestId.trim().isEmpty()) {
-            log.warn("请求ID不能为空");
-            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "请求ID不能为空");
+        checkIdempotent(CommonConstants.ACCOUNT_IDEMPOTENT_PREFIX, requestId, ttl, timeUnit);
+    }
+
+    public static void checkIdempotent(String prefix, String businessNo, long ttl, TimeUnit timeUnit) {
+        if (businessNo == null || businessNo.trim().isEmpty()) {
+            log.warn("业务流水号不能为空");
+            throw new BusinessException(ResultCodeEnum.PARAM_ERROR, "业务流水号不能为空");
         }
-        String key = CommonConstants.ACCOUNT_IDEMPOTENT_PREFIX + requestId;
+        String key = prefix + businessNo;
         RBucket<String> bucket = redissonClient.getBucket(key);
-        boolean existed = bucket.setIfAbsent("1", ttl, timeUnit);
+        boolean existed = bucket.setIfAbsent("PROCESSING", ttl, timeUnit);
         if (!existed) {
-            log.warn("重复请求, requestId: {}", requestId);
+            log.warn("重复请求, prefix: {}, businessNo: {}", prefix, businessNo);
             throw new BusinessException(ResultCodeEnum.DUPLICATE_REQUEST);
         }
     }
 
-    public static void removeIdempotent(String requestId) {
-        if (requestId == null || requestId.isEmpty()) {
+    public static String getIdempotentValue(String prefix, String businessNo) {
+        if (businessNo == null || businessNo.trim().isEmpty()) {
+            return null;
+        }
+        String key = prefix + businessNo;
+        RBucket<String> bucket = redissonClient.getBucket(key);
+        return bucket.get();
+    }
+
+    public static void setIdempotentResult(String prefix, String businessNo, String result, long ttl, TimeUnit timeUnit) {
+        if (businessNo == null || businessNo.trim().isEmpty()) {
             return;
         }
-        String key = CommonConstants.ACCOUNT_IDEMPOTENT_PREFIX + requestId;
+        String key = prefix + businessNo;
+        RBucket<String> bucket = redissonClient.getBucket(key);
+        bucket.set(result, ttl, timeUnit);
+        log.debug("设置幂等结果, prefix: {}, businessNo: {}, result: {}", prefix, businessNo, result);
+    }
+
+    public static void removeIdempotent(String requestId) {
+        removeIdempotent(CommonConstants.ACCOUNT_IDEMPOTENT_PREFIX, requestId);
+    }
+
+    public static void removeIdempotent(String prefix, String businessNo) {
+        if (businessNo == null || businessNo.isEmpty()) {
+            return;
+        }
+        String key = prefix + businessNo;
         redissonClient.getBucket(key).delete();
+        log.debug("删除幂等键, prefix: {}, businessNo: {}", prefix, businessNo);
     }
 }

@@ -2,6 +2,7 @@ package com.bank.core.account.config;
 
 import com.bank.core.common.utils.DistributedLockUtil;
 import com.bank.core.common.utils.IdempotentUtil;
+import com.bank.core.common.utils.RateLimitUtil;
 import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Configuration;
@@ -21,6 +22,7 @@ import javax.annotation.PostConstruct;
  * 注入的工具类：
  * 1. DistributedLockUtil：分布式锁工具类
  * 2. IdempotentUtil：幂等性工具类
+ * 3. RateLimitUtil：分布式限流工具类
  */
 @Configuration
 public class RedissonConfig {
@@ -37,5 +39,6 @@ public class RedissonConfig {
     public void init() {
         DistributedLockUtil.setRedissonClient(redissonClient);
         IdempotentUtil.setRedissonClient(redissonClient);
+        RateLimitUtil.setRedissonClient(redissonClient);
     }
 }

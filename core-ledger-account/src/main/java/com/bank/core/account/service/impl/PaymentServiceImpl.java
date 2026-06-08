@@ -20,6 +20,7 @@ import com.bank.core.common.exception.BusinessException;
 import com.bank.core.common.utils.AmountUtil;
 import com.bank.core.common.utils.DistributedLockUtil;
 import com.bank.core.common.utils.IdempotentUtil;
+import com.bank.core.common.utils.RateLimitUtil;
 import com.bank.core.common.utils.SnowflakeIdGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -91,95 +92,109 @@ public class PaymentServiceImpl implements PaymentService {
         log.info("开始充值, businessNo: {}, accountId: {}, amount: {}, channel: {}",
                 dto.getBusinessNo(), dto.getAccountId(), dto.getAmount(), dto.getChannelCode());
 
-        // 第一层幂等校验：基于requestId的快速失败
-        IdempotentUtil.checkIdempotent(dto.getRequestId());
+        RateLimitUtil.checkRateLimit(dto.getAccountId(), CommonConstants.RATE_LIMIT_RECHARGE_SUFFIX);
 
-        // 参数校验
-        validateRechargeParam(dto);
+        try {
+            IdempotentUtil.checkIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
 
-        // 第二层幂等校验：基于业务单号的Redis缓存
-        String idempotentKey = CommonConstants.PAYMENT_IDEMPOTENT_PREFIX + dto.getBusinessNo();
-        RBucket<String> idempotentBucket = redissonClient.getBucket(idempotentKey);
-        String cachedPaymentId = idempotentBucket.get();
-        if (cachedPaymentId != null) {
-            log.warn("幂等命中（Redis缓存）, businessNo: {}, paymentId: {}", dto.getBusinessNo(), cachedPaymentId);
-            PaymentOrder existOrder = paymentOrderMapper.selectByPaymentId(cachedPaymentId);
+            validateRechargeParam(dto);
+
+            String cachedPaymentId = IdempotentUtil.getIdempotentValue(
+                    CommonConstants.PAYMENT_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            if (cachedPaymentId != null && !"PROCESSING".equals(cachedPaymentId)) {
+                log.warn("幂等命中（Redis缓存）, businessNo: {}, paymentId: {}", dto.getBusinessNo(), cachedPaymentId);
+                PaymentOrder existOrder = paymentOrderMapper.selectByPaymentId(cachedPaymentId);
+                if (existOrder != null) {
+                    return convertToVO(existOrder);
+                }
+            }
+
+            PaymentOrder existOrder = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
             if (existOrder != null) {
+                log.warn("幂等命中（数据库）, businessNo: {}", dto.getBusinessNo());
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        existOrder.getPaymentId(),
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
                 return convertToVO(existOrder);
             }
-        }
 
-        // 第三层幂等校验：基于业务单号的数据库查询
-        PaymentOrder existOrder = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
-        if (existOrder != null) {
-            log.warn("幂等命中（数据库）, businessNo: {}", dto.getBusinessNo());
-            idempotentBucket.set(existOrder.getPaymentId(), 24, TimeUnit.HOURS);
-            return convertToVO(existOrder);
-        }
+            String lockKey = CommonConstants.PAYMENT_LOCK_PREFIX + dto.getBusinessNo();
+            return DistributedLockUtil.executeWithLock(lockKey, () -> {
+                PaymentOrder existAgain = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+                if (existAgain != null) {
+                    log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
+                    IdempotentUtil.setIdempotentResult(
+                            CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                            dto.getBusinessNo(),
+                            existAgain.getPaymentId(),
+                            CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                            TimeUnit.HOURS);
+                    return convertToVO(existAgain);
+                }
 
-        // 分布式锁：防止同一业务单号的并发请求
-        String lockKey = CommonConstants.PAYMENT_LOCK_PREFIX + dto.getBusinessNo();
-        return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            // 分布式锁内二次校验：防止锁竞争期间其他线程已处理
-            PaymentOrder existAgain = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
-            if (existAgain != null) {
-                log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
-                idempotentBucket.set(existAgain.getPaymentId(), 24, TimeUnit.HOURS);
-                return convertToVO(existAgain);
+                Account account = validateAccount(dto.getAccountId(), dto.getCurrency());
+
+                Account clearingAccount = getClearingAccount(dto.getChannelCode(), dto.getCurrency());
+
+                String paymentId = SnowflakeIdGenerator.nextIdStr();
+                String paymentNo = SnowflakeIdGenerator.generatePaymentNo();
+
+                PaymentOrder order = buildPaymentOrder(dto, paymentId, paymentNo, PaymentTypeEnum.RECHARGE);
+                paymentOrderMapper.insert(order);
+
+                try {
+                    createDepositTransaction(dto, account, clearingAccount, paymentId);
+
+                    order.setStatus(PaymentStatusEnum.SUCCESS.getCode());
+                    order.setChannelStatus(ChannelStatusEnum.PENDING.getCode());
+                    order.setSuccessTime(LocalDateTime.now());
+                    order.setUpdateTime(LocalDateTime.now());
+                    paymentOrderMapper.updateById(order);
+
+                    PaymentOrderVO vo = convertToVO(order);
+
+                    IdempotentUtil.setIdempotentResult(
+                            CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                            dto.getBusinessNo(),
+                            paymentId,
+                            CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                            TimeUnit.HOURS);
+
+                    sendPaymentEvent(vo, CommonConstants.ROCKETMQ_TAG_PAYMENT_RECHARGE);
+
+                    sendChannelNotification(order, ChannelStatusEnum.PENDING);
+
+                    deleteAccountCache(dto.getAccountId());
+                    deleteAccountCache(clearingAccount.getAccountId());
+
+                    log.info("充值成功, paymentId: {}, paymentNo: {}, amount: {}", paymentId, paymentNo, dto.getAmount());
+                    return vo;
+                } catch (Exception e) {
+                    log.error("充值失败, paymentId: {}, businessNo: {}", paymentId, dto.getBusinessNo(), e);
+                    order.setStatus(PaymentStatusEnum.FAILED.getCode());
+                    order.setChannelStatus(ChannelStatusEnum.CHANNEL_FAILED.getCode());
+                    order.setUpdateTime(LocalDateTime.now());
+                    paymentOrderMapper.updateById(order);
+                    throw e;
+                }
+            });
+        } catch (Exception e) {
+            if (e instanceof BusinessException) {
+                BusinessException be = (BusinessException) e;
+                if (!ResultCodeEnum.DUPLICATE_REQUEST.getCode().equals(be.getCode())) {
+                    IdempotentUtil.removeIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+                }
+            } else {
+                IdempotentUtil.removeIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX, dto.getBusinessNo());
             }
-
-            // 校验用户账户状态（存在、未关闭、未冻结、币种匹配）
-            Account account = validateAccount(dto.getAccountId(), dto.getCurrency());
-
-            // 获取渠道对应的清算账户（外部渠道在系统内的代表账户）
-            Account clearingAccount = getClearingAccount(dto.getChannelCode(), dto.getCurrency());
-
-            // 生成业务主键
-            String paymentId = SnowflakeIdGenerator.nextIdStr();
-            String paymentNo = SnowflakeIdGenerator.generatePaymentNo();
-
-            // 创建支付订单（初始状态：待处理）
-            PaymentOrder order = buildPaymentOrder(dto, paymentId, paymentNo, PaymentTypeEnum.RECHARGE);
-            paymentOrderMapper.insert(order);
-
-            try {
-                // 创建充值会计交易：借记银行存款（用户账户），贷记清算账户（渠道账户）
-                // 表示资金从外部渠道流入用户账户
-                createDepositTransaction(dto, account, clearingAccount, paymentId);
-
-                // 更新订单状态为成功
-                order.setStatus(PaymentStatusEnum.SUCCESS.getCode());
-                order.setChannelStatus(ChannelStatusEnum.PENDING.getCode());
-                order.setSuccessTime(LocalDateTime.now());
-                order.setUpdateTime(LocalDateTime.now());
-                paymentOrderMapper.updateById(order);
-
-                PaymentOrderVO vo = convertToVO(order);
-
-                // 缓存幂等结果
-                idempotentBucket.set(paymentId, 24, TimeUnit.HOURS);
-
-                // 发送支付事件到MQ（异步通知下游系统）
-                sendPaymentEvent(vo, CommonConstants.ROCKETMQ_TAG_PAYMENT_RECHARGE);
-
-                // 异步通知外部渠道（充值成功，渠道需确认）
-                sendChannelNotification(order, ChannelStatusEnum.PENDING);
-
-                // 清除账户缓存（余额已变更）
-                deleteAccountCache(dto.getAccountId());
-                deleteAccountCache(clearingAccount.getAccountId());
-
-                log.info("充值成功, paymentId: {}, paymentNo: {}, amount: {}", paymentId, paymentNo, dto.getAmount());
-                return vo;
-            } catch (Exception e) {
-                log.error("充值失败, paymentId: {}, businessNo: {}", paymentId, dto.getBusinessNo(), e);
-                order.setStatus(PaymentStatusEnum.FAILED.getCode());
-                order.setChannelStatus(ChannelStatusEnum.CHANNEL_FAILED.getCode());
-                order.setUpdateTime(LocalDateTime.now());
-                paymentOrderMapper.updateById(order);
-                throw e;
-            }
-        });
+            throw e;
+        }
     }
 
     /**
@@ -209,97 +224,110 @@ public class PaymentServiceImpl implements PaymentService {
         log.info("开始提现, businessNo: {}, accountId: {}, amount: {}, channel: {}",
                 dto.getBusinessNo(), dto.getAccountId(), dto.getAmount(), dto.getChannelCode());
 
-        // 第一层幂等校验：基于requestId的快速失败
-        IdempotentUtil.checkIdempotent(dto.getRequestId());
+        RateLimitUtil.checkRateLimit(dto.getAccountId(), CommonConstants.RATE_LIMIT_TRANSFER_SUFFIX);
 
-        // 参数校验
-        validateWithdrawParam(dto);
+        try {
+            IdempotentUtil.checkIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                    dto.getBusinessNo(),
+                    CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                    TimeUnit.HOURS);
 
-        // 第二层幂等校验：基于业务单号的Redis缓存
-        String idempotentKey = CommonConstants.PAYMENT_IDEMPOTENT_PREFIX + dto.getBusinessNo();
-        RBucket<String> idempotentBucket = redissonClient.getBucket(idempotentKey);
-        String cachedPaymentId = idempotentBucket.get();
-        if (cachedPaymentId != null) {
-            log.warn("幂等命中（Redis缓存）, businessNo: {}, paymentId: {}", dto.getBusinessNo(), cachedPaymentId);
-            PaymentOrder existOrder = paymentOrderMapper.selectByPaymentId(cachedPaymentId);
+            validateWithdrawParam(dto);
+
+            String cachedPaymentId = IdempotentUtil.getIdempotentValue(
+                    CommonConstants.PAYMENT_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+            if (cachedPaymentId != null && !"PROCESSING".equals(cachedPaymentId)) {
+                log.warn("幂等命中（Redis缓存）, businessNo: {}, paymentId: {}", dto.getBusinessNo(), cachedPaymentId);
+                PaymentOrder existOrder = paymentOrderMapper.selectByPaymentId(cachedPaymentId);
+                if (existOrder != null) {
+                    return convertToVO(existOrder);
+                }
+            }
+
+            PaymentOrder existOrder = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
             if (existOrder != null) {
+                log.warn("幂等命中（数据库）, businessNo: {}", dto.getBusinessNo());
+                IdempotentUtil.setIdempotentResult(
+                        CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                        dto.getBusinessNo(),
+                        existOrder.getPaymentId(),
+                        CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                        TimeUnit.HOURS);
                 return convertToVO(existOrder);
             }
-        }
 
-        // 第三层幂等校验：基于业务单号的数据库查询
-        PaymentOrder existOrder = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
-        if (existOrder != null) {
-            log.warn("幂等命中（数据库）, businessNo: {}", dto.getBusinessNo());
-            idempotentBucket.set(existOrder.getPaymentId(), 24, TimeUnit.HOURS);
-            return convertToVO(existOrder);
-        }
+            String lockKey = CommonConstants.PAYMENT_LOCK_PREFIX + dto.getBusinessNo();
+            return DistributedLockUtil.executeWithLock(lockKey, () -> {
+                PaymentOrder existAgain = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
+                if (existAgain != null) {
+                    log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
+                    IdempotentUtil.setIdempotentResult(
+                            CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                            dto.getBusinessNo(),
+                            existAgain.getPaymentId(),
+                            CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                            TimeUnit.HOURS);
+                    return convertToVO(existAgain);
+                }
 
-        // 分布式锁：防止同一业务单号的并发请求
-        String lockKey = CommonConstants.PAYMENT_LOCK_PREFIX + dto.getBusinessNo();
-        return DistributedLockUtil.executeWithLock(lockKey, () -> {
-            // 分布式锁内二次校验：防止锁竞争期间其他线程已处理
-            PaymentOrder existAgain = paymentOrderMapper.selectByBusinessNo(dto.getBusinessNo());
-            if (existAgain != null) {
-                log.warn("分布式锁内二次检查发现业务单号已存在, businessNo: {}", dto.getBusinessNo());
-                idempotentBucket.set(existAgain.getPaymentId(), 24, TimeUnit.HOURS);
-                return convertToVO(existAgain);
+                Account account = validateAccount(dto.getAccountId(), dto.getCurrency());
+                validateSufficientBalance(account, dto.getAmount());
+
+                Account clearingAccount = getClearingAccount(dto.getChannelCode(), dto.getCurrency());
+
+                String paymentId = SnowflakeIdGenerator.nextIdStr();
+                String paymentNo = SnowflakeIdGenerator.generatePaymentNo();
+
+                PaymentOrder order = buildPaymentOrder(dto, paymentId, paymentNo, PaymentTypeEnum.WITHDRAW);
+                paymentOrderMapper.insert(order);
+
+                try {
+                    createWithdrawTransaction(dto, account, clearingAccount, paymentId);
+
+                    order.setStatus(PaymentStatusEnum.PROCESSING.getCode());
+                    order.setChannelStatus(ChannelStatusEnum.PENDING.getCode());
+                    order.setUpdateTime(LocalDateTime.now());
+                    paymentOrderMapper.updateById(order);
+
+                    PaymentOrderVO vo = convertToVO(order);
+
+                    IdempotentUtil.setIdempotentResult(
+                            CommonConstants.PAYMENT_IDEMPOTENT_PREFIX,
+                            dto.getBusinessNo(),
+                            paymentId,
+                            CommonConstants.IDEMPOTENT_DEFAULT_TTL_HOURS,
+                            TimeUnit.HOURS);
+
+                    sendPaymentEvent(vo, CommonConstants.ROCKETMQ_TAG_PAYMENT_WITHDRAW);
+
+                    sendChannelNotification(order, ChannelStatusEnum.PENDING);
+
+                    deleteAccountCache(dto.getAccountId());
+                    deleteAccountCache(clearingAccount.getAccountId());
+
+                    log.info("提现申请成功, 等待渠道处理, paymentId: {}, paymentNo: {}, amount: {}",
+                            paymentId, paymentNo, dto.getAmount());
+                    return vo;
+                } catch (Exception e) {
+                    log.error("提现失败, paymentId: {}, businessNo: {}", paymentId, dto.getBusinessNo(), e);
+                    order.setStatus(PaymentStatusEnum.FAILED.getCode());
+                    order.setChannelStatus(ChannelStatusEnum.CHANNEL_FAILED.getCode());
+                    order.setUpdateTime(LocalDateTime.now());
+                    paymentOrderMapper.updateById(order);
+                    throw e;
+                }
+            });
+        } catch (Exception e) {
+            if (e instanceof BusinessException) {
+                BusinessException be = (BusinessException) e;
+                if (!ResultCodeEnum.DUPLICATE_REQUEST.getCode().equals(be.getCode())) {
+                    IdempotentUtil.removeIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX, dto.getBusinessNo());
+                }
+            } else {
+                IdempotentUtil.removeIdempotent(CommonConstants.PAYMENT_IDEMPOTENT_PREFIX, dto.getBusinessNo());
             }
-
-            // 校验用户账户状态（存在、未关闭、未冻结、币种匹配）
-            Account account = validateAccount(dto.getAccountId(), dto.getCurrency());
-            // 校验余额是否充足
-            validateSufficientBalance(account, dto.getAmount());
-
-            // 获取渠道对应的清算账户（外部渠道在系统内的代表账户）
-            Account clearingAccount = getClearingAccount(dto.getChannelCode(), dto.getCurrency());
-
-            // 生成业务主键
-            String paymentId = SnowflakeIdGenerator.nextIdStr();
-            String paymentNo = SnowflakeIdGenerator.generatePaymentNo();
-
-            // 创建支付订单（初始状态：待处理）
-            PaymentOrder order = buildPaymentOrder(dto, paymentId, paymentNo, PaymentTypeEnum.WITHDRAW);
-            paymentOrderMapper.insert(order);
-
-            try {
-                // 创建提现会计交易：借记清算账户（渠道账户），贷记银行存款（用户账户）
-                // 表示资金从用户账户流出到外部渠道
-                createWithdrawTransaction(dto, account, clearingAccount, paymentId);
-
-                // 更新订单状态为处理中（等待渠道异步处理）
-                order.setStatus(PaymentStatusEnum.PROCESSING.getCode());
-                order.setChannelStatus(ChannelStatusEnum.PENDING.getCode());
-                order.setUpdateTime(LocalDateTime.now());
-                paymentOrderMapper.updateById(order);
-
-                PaymentOrderVO vo = convertToVO(order);
-
-                // 缓存幂等结果
-                idempotentBucket.set(paymentId, 24, TimeUnit.HOURS);
-
-                // 发送支付事件到MQ（异步通知下游系统）
-                sendPaymentEvent(vo, CommonConstants.ROCKETMQ_TAG_PAYMENT_WITHDRAW);
-
-                // 异步通知外部渠道处理提现
-                sendChannelNotification(order, ChannelStatusEnum.PENDING);
-
-                // 清除账户缓存（余额已变更）
-                deleteAccountCache(dto.getAccountId());
-                deleteAccountCache(clearingAccount.getAccountId());
-
-                log.info("提现申请成功, 等待渠道处理, paymentId: {}, paymentNo: {}, amount: {}",
-                        paymentId, paymentNo, dto.getAmount());
-                return vo;
-            } catch (Exception e) {
-                log.error("提现失败, paymentId: {}, businessNo: {}", paymentId, dto.getBusinessNo(), e);
-                order.setStatus(PaymentStatusEnum.FAILED.getCode());
-                order.setChannelStatus(ChannelStatusEnum.CHANNEL_FAILED.getCode());
-                order.setUpdateTime(LocalDateTime.now());
-                paymentOrderMapper.updateById(order);
-                throw e;
-            }
-        });
+            throw e;
+        }
     }
 
     /**
@@ -1051,6 +1079,9 @@ public class PaymentServiceImpl implements PaymentService {
     private void deleteAccountCache(String accountId) {
         String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();
+        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
+        redissonClient.getBucket(balanceCacheKey).delete();
+        log.debug("删除账户缓存及余额缓存, accountId: {}", accountId);
     }
 
     private java.util.Map<String, Object> buildCallbackData(PaymentOrderVO vo, java.util.Map<String, Object> additionalData) {

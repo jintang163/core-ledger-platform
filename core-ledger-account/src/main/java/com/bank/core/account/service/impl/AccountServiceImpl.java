@@ -351,8 +351,41 @@ public class AccountServiceImpl implements AccountService {
         }
     }
 
+    @Override
+    public BigDecimal getBalanceCache(String accountId) {
+        log.debug("查询账户余额（缓存优先）, accountId: {}", accountId);
+
+        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
+        RBucket<String> balanceCacheBucket = redissonClient.getBucket(balanceCacheKey);
+        String cachedBalance = balanceCacheBucket.get();
+        if (cachedBalance != null) {
+            log.debug("从余额缓存获取成功, accountId: {}, balance: {}", accountId, cachedBalance);
+            return new BigDecimal(cachedBalance);
+        }
+
+        Account account = accountMapper.selectByAccountId(accountId);
+        if (account == null) {
+            throw new BusinessException(ResultCodeEnum.ACCOUNT_NOT_EXIST);
+        }
+
+        BigDecimal balanceYuan = AmountUtil.fenToYuan(account.getBalance());
+        balanceCacheBucket.set(balanceYuan.toPlainString(),
+                CommonConstants.ACCOUNT_BALANCE_CACHE_TTL, TimeUnit.SECONDS);
+
+        log.debug("从数据库查询余额并写入缓存, accountId: {}, balance: {}", accountId, balanceYuan);
+        return balanceYuan;
+    }
+
+    @Override
+    public void deleteBalanceCache(String accountId) {
+        String balanceCacheKey = CommonConstants.ACCOUNT_BALANCE_CACHE_PREFIX + accountId;
+        redissonClient.getBucket(balanceCacheKey).delete();
+        log.debug("删除账户余额缓存, accountId: {}", accountId);
+    }
+
     private void deleteAccountCache(String accountId) {
         String cacheKey = CommonConstants.ACCOUNT_CACHE_PREFIX + accountId;
         redissonClient.getBucket(cacheKey).delete();
+        deleteBalanceCache(accountId);
     }
 }

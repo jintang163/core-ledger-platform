@@ -54,7 +54,9 @@ public enum ResultCodeEnum {
 
     ACCOUNT_STATUS_ERROR(8001, "账户状态异常"),
     HOT_ACCOUNT_SHARD_FAILED(8002, "热点账户分片失败"),
-    HOT_ACCOUNT_MERGE_FAILED(8003, "热点账户归并失败");
+    HOT_ACCOUNT_MERGE_FAILED(8003, "热点账户归并失败"),
+
+    RATE_LIMIT_EXCEEDED(9001, "操作过于频繁，请稍后再试");
 
     private final Integer code;
     private final String message;
