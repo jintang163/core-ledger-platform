@@ -36,3 +36,4 @@ dynamic-form-design-backend/uploads/
 code/
 .m2/
 .trae/
+.npm-cache/
